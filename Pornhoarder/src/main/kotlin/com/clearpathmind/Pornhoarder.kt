@@ -129,7 +129,17 @@ class Pornhoarder : MainAPI() {
                 interceptor = cfKiller,
                 headers = requestHeaders()
             )
-            CloudflareSolver.mergeCookies(res.headers.values("Set-Cookie"))
+            // Collect Set-Cookie from every hop: the settings POST answers
+            // with a 302 redirect and the preference cookie is set on the
+            // intermediate response, not the final one.
+            val allSetCookies = mutableListOf<String>()
+            var prior: okhttp3.Response? = res.priorResponse
+            while (prior != null) {
+                allSetCookies.addAll(prior.headers.values("Set-Cookie"))
+                prior = prior.priorResponse
+            }
+            allSetCookies.addAll(res.headers.values("Set-Cookie"))
+            CloudflareSolver.mergeCookies(allSetCookies)
         } catch (_: Exception) {
         }
     }
@@ -238,8 +248,12 @@ class Pornhoarder : MainAPI() {
     private suspend fun fetchIndex(name: String): List<SearchResponse> {
         for (p in indexPaths[name].orEmpty()) {
             try {
-                val r = selectIndex(getDoc(withHost("$mainUrl$p", mainUrl)))
-                if (r.isNotEmpty()) return r
+                val doc = getDoc(withHost("$mainUrl$p", mainUrl))
+                val grids = selectIndex(doc)
+                if (grids.isNotEmpty()) return grids
+                // Fallback: some index pages list videos directly.
+                val vids = selectArticles(doc)
+                if (vids.isNotEmpty()) return vids
             } catch (_: Exception) {
             }
         }
