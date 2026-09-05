@@ -185,8 +185,28 @@ class Pornhoarder : MainAPI() {
             }
         }
         if (recs.isEmpty()) recs = selectArticles(doc)
-        return recs.filter { it.url != currentUrl }.take(24).ifEmpty { null }
+        // Dedupe: same video often appears twice (desktop/mobile markup,
+        // URL variants, or the open video itself listed again).
+        val current = normUrl(currentUrl)
+        val seenUrls = mutableSetOf<String>()
+        val seenTitles = mutableSetOf<String>()
+        return recs.filter { r ->
+            val nu = normUrl(r.url)
+            if (nu == current || nu.isBlank()) return@filter false
+            if (!seenUrls.add(nu)) return@filter false
+            if (!seenTitles.add(normTitle(r.name))) return@filter false
+            true
+        }.take(24).ifEmpty { null }
     }
+
+    private fun normUrl(u: String): String {
+        var s = u.trim().lowercase().substringBefore("?").substringBefore("#")
+        while (s.endsWith("/")) s = s.dropLast(1)
+        return s.replace("://www.", "://")
+    }
+
+    private fun normTitle(t: String): String =
+        t.trim().lowercase().replace(Regex("\\s+"), " ")
 
     /** Duration in minutes from meta / info-block time strings / JSON-LD. */
     private fun extractDurationMinutes(doc: org.jsoup.nodes.Document): Int? {
