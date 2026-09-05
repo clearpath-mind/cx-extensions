@@ -227,8 +227,6 @@ class Pornhoarder : MainAPI() {
             }
         }.distinctBy { it.url }.take(200)
     }
-        }.distinctBy { it.url }.take(200)
-    }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         ensureStraightOrientation()
