@@ -129,11 +129,11 @@ class Pornhoarder : MainAPI() {
                 interceptor = cfKiller,
                 headers = requestHeaders()
             )
-            // Collect Set-Cookie from every hop: the settings POST answers
-            // with a 302 redirect and the preference cookie is set on the
-            // intermediate response, not the final one.
+            // Collect Set-Cookie from every hop via the wrapped okhttp
+            // response: the settings POST answers with a 302 redirect and
+            // the preference cookie is set on the intermediate response.
             val allSetCookies = mutableListOf<String>()
-            var prior: okhttp3.Response? = res.priorResponse
+            var prior = res.okhttpResponse.priorResponse
             while (prior != null) {
                 allSetCookies.addAll(prior.headers.values("Set-Cookie"))
                 prior = prior.priorResponse
