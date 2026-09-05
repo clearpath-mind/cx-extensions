@@ -23,7 +23,7 @@ import androidx.appcompat.app.AppCompatActivity
  */
 class CfSettingsDialog(
     private val activity: AppCompatActivity,
-    private val siteUrl: String = "https://ww3.pornhoarder.org"
+    private val siteUrl: String = "https://ww8.pornhoarder.org"
 ) {
     private val uiHandler = Handler(Looper.getMainLooper())
     private var poll: Runnable? = null

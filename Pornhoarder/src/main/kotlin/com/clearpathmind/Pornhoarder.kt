@@ -26,7 +26,7 @@ import okhttp3.FormBody
 import org.jsoup.nodes.Element
 
 class Pornhoarder : MainAPI() {
-    override var mainUrl = "https://ww3.pornhoarder.org"
+    override var mainUrl = "https://ww8.pornhoarder.org"
     override var name = "PornHoarder"
     override val hasMainPage = true
     override var lang = "en"
@@ -37,10 +37,23 @@ class Pornhoarder : MainAPI() {
     override val vpnStatus = VPNStatus.MightBeNeeded
 
     private val cfKiller get() = CloudflareKiller()
-    private val ajaxUrl get() = "$mainUrl/ajax_search.php"
 
-    /** Previous primary domain (currently Cloudflare edge-broken, Error 1034). */
-    private val fallbackUrl = "https://pornhoarder.tv"
+    /**
+     * Mirror rotation: subdomains rotate (ww3 → ww8 …) and the bare domain is
+     * Cloudflare edge-broken (Error 1034). Every request cycles the hosts.
+     */
+    private val mirrorHosts = listOf(
+        "https://ww8.pornhoarder.org",
+        "https://ww3.pornhoarder.org",
+        "https://pornhoarder.tv"
+    )
+
+    private fun withHost(url: String, host: String): String {
+        mirrorHosts.forEach { h ->
+            if (url.startsWith(h)) return host + url.removePrefix(h)
+        }
+        return if (url.startsWith("http")) url else host + url
+    }
 
     /** GET with mirror fallback: primary → fallback on edge-dead pages. */
     private suspend fun getDoc(url: String) = fetchWithFallback(url, isPost = false, body = null)
@@ -54,7 +67,7 @@ class Pornhoarder : MainAPI() {
         isPost: Boolean,
         body: FormBody?
     ): org.jsoup.nodes.Document {
-        val attempts = listOf(url, url.replace(mainUrl, fallbackUrl)).distinct()
+        val attempts = mirrorHosts.map { withHost(url, it) }.distinct()
         var lastEdgeError: ErrorLoadingException? = null
         for (attempt in attempts) {
             val html = if (isPost && body != null) {
@@ -72,11 +85,12 @@ class Pornhoarder : MainAPI() {
         throw lastEdgeError ?: ErrorLoadingException("Site unreachable (Cloudflare edge) — try again later")
     }
 
+    // Verified listing pattern (user-reported):
+    // Latest  → /search/?search=&sort=0
+    // Popular → /search/?search=&sort=2
     override val mainPage = mainPageOf(
-        "Latest" to "Latest Videos",
-        "Popular" to "Popular Videos",
-        "/trending-videos/" to "Trending Videos",
-        "/random-videos/" to "Random Videos"
+        "$mainUrl/search/?search=&sort=0" to "Latest Videos",
+        "$mainUrl/search/?search=&sort=2" to "Popular Videos"
     )
 
     private fun requestHeaders() = mapOf(
@@ -86,116 +100,18 @@ class Pornhoarder : MainAPI() {
         if (cookies.isNotBlank()) mapOf("Cookie" to cookies) else emptyMap()
     }
 
-    /**
-     * Discovers the site's live listing/search form (action URL + fields) so
-     * POST params track the site even when they change. Falls back to the
-     * legacy hardcoded body when discovery fails. Cached per session.
-     */
-    private var formCache: DiscoveredForm? = null
-    private data class DiscoveredForm(val action: String, val fields: Map<String, List<String>>)
-
-    private suspend fun discoverForm(): DiscoveredForm? {
-        formCache?.let { return it }
-        return try {
-            val doc = app.get(mainUrl, interceptor = cfKiller, headers = requestHeaders()).document
-            val form = doc.select("form").firstOrNull { f ->
-                f.selectFirst("input[name=search], input[name=s], input[name=q], input[name=query]") != null ||
-                    f.attr("action").contains("ajax", true) ||
-                    f.attr("action").contains("search", true)
-            } ?: return null
-            val actionAttr = form.attr("action")
-            val action = fixUrlNull(if (actionAttr.isBlank()) ajaxUrl else actionAttr) ?: ajaxUrl
-            val fields = mutableMapOf<String, MutableList<String>>()
-            form.select("input[name], select[name], textarea[name]").forEach { el ->
-                val fname = el.attr("name")
-                if (fname.isBlank()) return@forEach
-                when (el.tagName().lowercase()) {
-                    "input" -> {
-                        val t = el.attr("type").lowercase()
-                        if (t == "checkbox" || t == "radio") {
-                            if (el.hasAttr("checked")) {
-                                fields.getOrPut(fname) { mutableListOf() }
-                                    .add(el.attr("value").ifBlank { "1" })
-                            }
-                        } else if (t != "submit" && t != "button" && t != "image" && t != "file") {
-                            fields.getOrPut(fname) { mutableListOf() }.add(el.attr("value"))
-                        }
-                    }
-                    "select" -> {
-                        val selected = el.select("option[selected]")
-                        val opts = if (selected.isNotEmpty()) selected else el.select("option").take(1)
-                        opts.forEach { o ->
-                            fields.getOrPut(fname) { mutableListOf() }.add(o.attr("value"))
-                        }
-                    }
-                    else -> fields.getOrPut(fname) { mutableListOf() }.add(el.text())
-                }
-            }
-            DiscoveredForm(action, fields).also { formCache = it }
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun buildListingBody(
-        query: String,
-        latest: Boolean,
-        page: Int,
-        form: DiscoveredForm?
-    ): Pair<String, FormBody> {
-        val action = form?.action ?: ajaxUrl
-        val b = FormBody.Builder()
-        var searchSet = false
-        var sortSet = false
-        var pageSet = false
-        var hasServers = false
-        form?.fields?.forEach { (fname, vals) ->
-            when {
-                fname.equals("search", true) || fname.equals("s", true) ||
-                    fname.equals("q", true) || fname.equals("query", true) -> {
-                    b.add(fname, query)
-                    searchSet = true
-                }
-                fname.equals("sort", true) || fname.equals("orderby", true) ||
-                    fname.equals("order", true) -> {
-                    b.add(fname, if (latest) "0" else "2")
-                    sortSet = true
-                }
-                fname.equals("page", true) || fname.equals("paged", true) -> {
-                    b.add(fname, page.toString())
-                    pageSet = true
-                }
-                fname.equals("servers[]", true) || fname.equals("servers", true) -> {
-                    vals.forEach { b.add(fname, it) }
-                    hasServers = true
-                }
-                else -> vals.forEach { b.add(fname, it) }
-            }
-        }
-        if (!searchSet) b.add("search", query)
-        if (!sortSet) b.add("sort", if (latest) "0" else "2")
-        if (!pageSet) b.add("page", page.toString())
-        if (form == null && !hasServers) {
-            // NOTE: use add() (not addEncoded) so values are URL-encoded.
-            listOf("40", "45", "12", "29", "25", "41", "46", "17", "44", "42", "43")
-                .forEach { b.add("servers[]", it) }
-            b.add("date", "0")
-            b.add("author", "0")
-        }
-        return action to b.build()
+    /** Verified site pattern: GET /search/?search=<q>&sort=<0|2>[&page=N]. */
+    private fun listingUrl(query: String, sort: String, page: Int): String {
+        val q = java.net.URLEncoder.encode(query, "UTF-8")
+        return "$mainUrl/search/?search=$q&sort=$sort" + if (page > 1) "&page=$page" else ""
     }
 
     private fun selectArticles(doc: org.jsoup.nodes.Document): List<SearchResponse> =
         doc.select(".video article").mapNotNull { it.toSearchResult() }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val home = if (request.data == "Latest" || request.data == "Popular") {
-            val form = discoverForm()
-            val (action, body) = buildListingBody("", request.data == "Latest", page, form)
-            selectArticles(postDoc(action, body))
-        } else {
-            selectArticles(getDoc("$mainUrl${request.data}?page=$page"))
-        }
+        val url = withHost(request.data, mainUrl) + if (page > 1) "&page=$page" else ""
+        val home = selectArticles(getDoc(url))
         return newHomePageResponse(
             HomePageList(request.name, home, isHorizontalImages = true),
             hasNext = home.isNotEmpty()
@@ -220,23 +136,7 @@ class Pornhoarder : MainAPI() {
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList? {
-        val q = query.trim()
-        val form = discoverForm()
-        val (action, body) = buildListingBody(q, true, page, form)
-        var results = selectArticles(postDoc(action, body))
-        // Fallback: plain GET search URLs when the ajax endpoint yields nothing.
-        if (results.isEmpty() && q.isNotBlank()) {
-            for (u in listOf("$mainUrl/search/$q/", "$mainUrl/?s=$q")) {
-                try {
-                    val r = selectArticles(getDoc(u))
-                    if (r.isNotEmpty()) {
-                        results = r
-                        break
-                    }
-                } catch (_: Exception) {
-                }
-            }
-        }
+        val results = selectArticles(getDoc(listingUrl(query.trim(), sort = "0", page)))
         return newSearchResponseList(results, results.isNotEmpty())
     }
 
