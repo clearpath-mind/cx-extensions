@@ -61,6 +61,35 @@ object CloudflareSolver {
             }?.apply()
     }
 
+    /**
+     * Merges Set-Cookie response headers into the persisted cookie string so
+     * server-set preferences (e.g. orientation) survive: NiceHttp's jar is
+     * bypassed because requests carry an explicit Cookie header.
+     */
+    fun mergeCookies(setCookieHeaders: List<String>) {
+        if (setCookieHeaders.isEmpty()) return
+        val store = storedCookies().split(";")
+            .map { it.trim() }
+            .filter { it.contains("=") }
+            .associate { it.substringBefore("=").trim() to it.substringAfter("=").trim() }
+            .toMutableMap()
+        for (h in setCookieHeaders) {
+            val pair = h.substringBefore(";").trim()
+            if (!pair.contains("=")) continue
+            val name = pair.substringBefore("=").trim()
+            val value = pair.substringAfter("=").trim()
+            if (name.isBlank()) continue
+            if (value.isBlank() || h.contains("expires=Thu, 01 Jan 1970", true)) {
+                store.remove(name)
+            } else {
+                store[name] = value
+            }
+        }
+        prefs()?.edit()
+            ?.putString(KEY_COOKIES, store.map { (k, v) -> "$k=$v" }.joinToString("; "))
+            ?.apply()
+    }
+
     fun clearCookies() {
         prefs()?.edit()?.remove(KEY_COOKIES)?.remove(KEY_UA)?.apply()
     }

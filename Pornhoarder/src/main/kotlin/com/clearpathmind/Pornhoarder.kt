@@ -105,6 +105,35 @@ class Pornhoarder : MainAPI() {
         if (cookies.isNotBlank()) mapOf("Cookie" to cookies) else emptyMap()
     }
 
+    /**
+     * Forces orientation to Straight (value 0) once per session via the
+     * site's own settings form (POST /settings/). Silent on failure —
+     * never breaks listings. Response cookies are merged into the
+     * persisted store (explicit Cookie headers bypass NiceHttp's jar).
+     */
+    private var orientationEnsured = false
+
+    private suspend fun ensureStraightOrientation() {
+        if (orientationEnsured) return
+        orientationEnsured = true
+        try {
+            val body = FormBody.Builder()
+                .add("sexual-orientation", "0")
+                .add("theme", "1")
+                .add("size", "0")
+                .add("web_size", "1")
+                .build()
+            val res = app.post(
+                withHost("$mainUrl/settings/", mainUrl),
+                requestBody = body,
+                interceptor = cfKiller,
+                headers = requestHeaders()
+            )
+            CloudflareSolver.mergeCookies(res.headers.values("Set-Cookie"))
+        } catch (_: Exception) {
+        }
+    }
+
     /** Verified site pattern: GET /search/?search=<q>&sort=<0|2>[&page=N]. */
     private fun listingUrl(query: String, sort: String, page: Int): String {
         val q = java.net.URLEncoder.encode(query, "UTF-8")
@@ -161,33 +190,48 @@ class Pornhoarder : MainAPI() {
         return emptyList()
     }
 
-    /** Parses index grids: anchors wrapping a thumbnail image + short label. */
+    /** Parses index grids inside <main> (nav lives in <aside>, so it's excluded
+     * structurally). Accepts <img> or CSS background-image thumbnails. */
     private fun selectIndex(doc: org.jsoup.nodes.Document): List<SearchResponse> {
-        val skipPaths = setOf("/", "/login", "/login/", "/signup", "/sign-up", "/settings",
-            "/settings/", "/contact", "/contact/", "/abuse", "/about")
-        return doc.select("a[href]").mapNotNull { a ->
+        val skipPaths = setOf("/", "/hp", "/hp/", "/login", "/login/", "/signup",
+            "/sign-up", "/settings", "/settings/", "/contact", "/contact/",
+            "/abuse", "/about", "/search", "/search/")
+        val scope = doc.selectFirst("main") ?: doc
+        return scope.select("a[href]").mapNotNull { a ->
             val raw = a.attr("href").trim()
             if (raw.isBlank()) return@mapNotNull null
             val abs = fixUrlNull(if (raw.startsWith("http")) raw else mainUrl + raw)
                 ?: return@mapNotNull null
             if (!abs.startsWith(mainUrl)) return@mapNotNull null
-            if (abs.removePrefix(mainUrl) in skipPaths) return@mapNotNull null
-            val img = a.selectFirst("img") ?: return@mapNotNull null
-            val title = img.attr("alt").trim()
+            if (abs.removePrefix(mainUrl).substringBefore("?") in skipPaths) return@mapNotNull null
+            val img = a.selectFirst("img")
+            val bgUrl = a.select("[style*=url]").firstNotNullOfOrNull { el ->
+                Regex("""url\(['"]?(.*?)['"]?\)""")
+                    .find(el.attr("style"))?.groupValues?.get(1)
+                    ?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
+            } ?: Regex("""url\(['"]?(.*?)['"]?\)""")
+                .find(a.attr("style"))?.groupValues?.get(1)
+                ?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
+            val poster = fixUrlNull(
+                img?.attr("data-src")?.ifBlank { null }
+                    ?: img?.attr("src")?.ifBlank { null }
+                    ?: bgUrl
+            ) ?: return@mapNotNull null
+            val title = (img?.attr("alt")?.trim().orEmpty())
                 .ifBlank { a.selectFirst("span, strong, b, h2, h3")?.text()?.trim().orEmpty() }
                 .ifBlank { a.text().trim() }
                 .ifBlank { return@mapNotNull null }
-            if (title.length > 60) return@mapNotNull null
-            val poster = fixUrlNull(
-                img.attr("data-src").ifBlank { null } ?: img.attr("src").ifBlank { null }
-            ) ?: return@mapNotNull null
+            if (title.length > 80) return@mapNotNull null
             newMovieSearchResponse(title, abs, TvType.NSFW) {
                 this.posterUrl = poster
             }
         }.distinctBy { it.url }.take(200)
     }
+        }.distinctBy { it.url }.take(200)
+    }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        ensureStraightOrientation()
         if (request.name in indexPaths) {
             val home = if (page > 1) emptyList() else fetchIndex(request.name)
             return newHomePageResponse(
@@ -245,6 +289,7 @@ class Pornhoarder : MainAPI() {
     override suspend fun search(query: String, page: Int): SearchResponseList? {
         val q = query.trim()
         if (q.isBlank()) return newSearchResponseList(emptyList(), false)
+        ensureStraightOrientation()
         val enc = java.net.URLEncoder.encode(q, "UTF-8")
         val pageSuffix = if (page > 1) "&page=$page" else ""
         val candidates = listOf(
