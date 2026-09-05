@@ -2,14 +2,14 @@
     {
         "url": "https://raw.githubusercontent.com/clearpath-mind/cx-extensions/builds/Pornhoarder.cs3",
         "status": 1,
-        "version": 12,
+        "version": 13,
         "name": "Pornhoarder",
         "internalName": "Pornhoarder",
         "authors": [
             "clearpath-mind"
         ],
         "description": "PornHoarder - mirror domain with Cloudflare handling",
-        "fileSize": 42471,
+        "fileSize": 38774,
         "repositoryUrl": "https://github.com/clearpath-mind/cx-extensions",
         "language": "en",
         "tvTypes": [
@@ -17,6 +17,6 @@
         ],
         "iconUrl": "https://www.google.com/s2/favicons?domain=ww8.pornhoarder.org&sz=128",
         "apiVersion": 1,
-        "fileHash": "sha256-fccf9fc2191647ee437a236869cc145e360b140e7667121dceeb78af06d244fb"
+        "fileHash": "sha256-2c316f99cf51497d8e4bc7cba7996992a1267ed2f997ce9708802030c463b8da"
     }
 ]
