@@ -1,0 +1,7 @@
+{
+    "name": "Cx Extensions",
+    "manifestVersion": 1,
+    "pluginLists": [
+        "https://raw.githubusercontent.com/clearpath-mind/cx-extensions/builds/plugins.json"
+    ]
+}
