@@ -87,23 +87,26 @@ class Pornhoarder : MainAPI() {
     }
 
     private fun searchBody(query: String, latest: Boolean, page: Int): FormBody {
+        // NOTE: use add() (not addEncoded) so queries with spaces/symbols are
+        // URL-encoded; unencoded values made the server ignore the search term
+        // and return the default listing for every query.
         return FormBody.Builder()
-            .addEncoded("search", query)
-            .addEncoded("sort", if (latest) "0" else "2")
-            .addEncoded("date", "0")
-            .addEncoded("servers[]", "40")
-            .addEncoded("servers[]", "45")
-            .addEncoded("servers[]", "12")
-            .addEncoded("servers[]", "29")
-            .addEncoded("servers[]", "25")
-            .addEncoded("servers[]", "41")
-            .addEncoded("servers[]", "46")
-            .addEncoded("servers[]", "17")
-            .addEncoded("servers[]", "44")
-            .addEncoded("servers[]", "42")
-            .addEncoded("servers[]", "43")
-            .addEncoded("author", "0")
-            .addEncoded("page", page.toString())
+            .add("search", query)
+            .add("sort", if (latest) "0" else "2")
+            .add("date", "0")
+            .add("servers[]", "40")
+            .add("servers[]", "45")
+            .add("servers[]", "12")
+            .add("servers[]", "29")
+            .add("servers[]", "25")
+            .add("servers[]", "41")
+            .add("servers[]", "46")
+            .add("servers[]", "17")
+            .add("servers[]", "44")
+            .add("servers[]", "42")
+            .add("servers[]", "43")
+            .add("author", "0")
+            .add("page", page.toString())
             .build()
     }
 

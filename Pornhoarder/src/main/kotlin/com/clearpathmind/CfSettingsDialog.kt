@@ -1,9 +1,12 @@
 package com.clearpathmind
 
 import android.app.Dialog
+import android.graphics.Color
+import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -15,10 +18,10 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 
 /**
- * Manual Cloudflare solver: shows the challenge page in a full-screen dialog
- * with an "Auto-tap checkbox" button that taps the Turnstile widget
- * coordinates directly (no need to find it visually). Solved cookies are
- * persisted via [CloudflareSolver] and attached to every [Pornhoarder] request.
+ * Cloudflare solver dialog: shows the challenge page full-screen with an
+ * "Auto-tap" button that scrolls the Turnstile widget into view and taps it
+ * (up to 3 attempts). Solved cookies are persisted via [CloudflareSolver]
+ * and attached to every [Pornhoarder] request.
  */
 class CfSettingsDialog(
     private val activity: AppCompatActivity,
@@ -27,10 +30,38 @@ class CfSettingsDialog(
     private val uiHandler = Handler(Looper.getMainLooper())
     private var poll: Runnable? = null
 
+    private object Style {
+        const val BG = "#101014"
+        const val CARD = "#1C1C22"
+        const val ACCENT = "#FF9800"
+        const val TEXT = "#F5F5F5"
+        const val DIM = "#9E9E9E"
+        const val GREEN = "#4CAF50"
+        const val AMBER = "#FFC107"
+        const val GRAY = "#BDBDBD"
+        const val PAD = 40
+    }
+
     fun show() {
+        val title = TextView(activity).apply {
+            text = "PornHoarder"
+            setTextColor(Color.parseColor(Style.TEXT))
+            textSize = 22f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(Style.PAD, Style.PAD, Style.PAD, 4)
+        }
+        val subtitle = TextView(activity).apply {
+            text = "Cloudflare check"
+            setTextColor(Color.parseColor(Style.DIM))
+            textSize = 14f
+            setPadding(Style.PAD, 0, Style.PAD, 16)
+        }
         val status = TextView(activity).apply {
             text = "Loading challenge page…"
-            setPadding(32, 24, 32, 24)
+            setTextColor(Color.parseColor(Style.GRAY))
+            textSize = 15f
+            setPadding(Style.PAD, 28, Style.PAD, 28)
+            setBackgroundColor(Color.parseColor(Style.CARD))
         }
         val webView = WebView(activity)
         webView.layoutParams = LinearLayout.LayoutParams(
@@ -53,46 +84,55 @@ class CfSettingsDialog(
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                status.text = "Page loaded — checking for challenge…"
+                setStatus(status, "Page loaded — checking for challenge…", Style.GRAY)
                 startDetection(webView, status)
             }
         }
 
-        val autoTap = Button(activity).apply {
-            text = "Auto-tap checkbox"
-            setOnClickListener { autoTapCheckbox(webView, status) }
-        }
-        val reload = Button(activity).apply {
-            text = "Reload"
-            setOnClickListener {
-                status.text = "Reloading…"
-                webView.reload()
-            }
-        }
-
         var dialog: Dialog? = null
-        val save = Button(activity).apply {
-            text = "Save & Close"
-            setOnClickListener {
-                CloudflareSolver.saveCookies(siteUrl, Pornhoarder.USER_AGENT)
-                CookieManager.getInstance().flush()
-                dialog?.dismiss()
-            }
+        val autoTap = styledButton("Auto-tap") {
+            autoTapCheckbox(webView, status, attemptsLeft = 3)
+        }
+        val reload = styledButton("Reload") {
+            setStatus(status, "Reloading…", Style.GRAY)
+            webView.reload()
+        }
+        val save = styledButton("Save & Close", accent = true) {
+            CloudflareSolver.saveCookies(siteUrl, Pornhoarder.USER_AGENT)
+            CookieManager.getInstance().flush()
+            dialog?.dismiss()
         }
         val buttons = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(16, 20, 16, 20)
             addView(autoTap, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(reload, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(save, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
         val layout = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor(Style.BG))
+            addView(
+                title,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+            addView(
+                subtitle,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
             addView(
                 status,
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
-                )
+                ).apply { setMargins(Style.PAD, 0, Style.PAD, 16) }
             )
             addView(webView)
             addView(
@@ -104,7 +144,6 @@ class CfSettingsDialog(
             )
         }
         dialog = Dialog(activity).apply {
-            setTitle("PornHoarder — Cloudflare check")
             setContentView(layout)
             window?.setLayout(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -123,40 +162,97 @@ class CfSettingsDialog(
         dialog.show()
     }
 
-    /** Finds the Turnstile iframe center and dispatches a real tap on it. */
-    private fun autoTapCheckbox(webView: WebView, status: TextView) {
-        status.text = "Looking for checkbox…"
-        webView.evaluateJavascript(
-            "(function(){var f=document.querySelector('iframe[src*=\"challenges.cloudflare.com\"]');" +
-                "if(!f)return \"NO_IFRAME\";var r=f.getBoundingClientRect();" +
-                "if(r.width===0&&r.height===0)return \"HIDDEN\";" +
-                "return (r.left+r.width/2)+\",\"+(r.top+r.height/2);})();"
-        ) { res ->
+    private fun styledButton(label: String, accent: Boolean = false, onClick: () -> Unit): Button {
+        return Button(activity).apply {
+            text = label
+            setTextColor(
+                if (accent) Color.parseColor("#101014")
+                else Color.parseColor(Style.TEXT)
+            )
+            setBackgroundColor(
+                if (accent) Color.parseColor(Style.ACCENT)
+                else Color.parseColor(Style.CARD)
+            )
+            setOnClickListener { onClick() }
+        }
+    }
+
+    private fun setStatus(status: TextView, text: String, colorHex: String) {
+        status.text = text
+        status.setTextColor(Color.parseColor(colorHex))
+    }
+
+    /**
+     * Finds the Turnstile widget (multiple selector fallbacks), scrolls it
+     * into view, waits for layout, then dispatches a real tap. Retries with
+     * status updates so failures are visible instead of silent.
+     */
+    private fun autoTapCheckbox(webView: WebView, status: TextView, attemptsLeft: Int) {
+        if (attemptsLeft <= 0) {
+            setStatus(
+                status,
+                "Auto-tap failed after 3 tries — tap the widget manually, then Save & Close.",
+                Style.AMBER
+            )
+            return
+        }
+        setStatus(status, "Looking for checkbox… (try ${4 - attemptsLeft}/3)", Style.GRAY)
+        webView.evaluateJavascript(FIND_WIDGET_JS) { res ->
             val clean = res?.removeSurrounding("\"").orEmpty()
+            if (clean == "NO_WIDGET") {
+                setStatus(
+                    status,
+                    "No Turnstile widget in page — Reload and try again.",
+                    Style.AMBER
+                )
+                return@evaluateJavascript
+            }
             val cx = clean.substringBefore(",").toFloatOrNull()
             val cy = clean.substringAfter(",", "").toFloatOrNull()
             if (cx == null || cy == null) {
-                status.text = "Checkbox not tappable ($clean) — Reload and try again."
+                setStatus(status, "Widget not laid out yet ($clean) — retrying…", Style.GRAY)
+                uiHandler.postDelayed({ autoTapCheckbox(webView, status, attemptsLeft - 1) }, 1500)
                 return@evaluateJavascript
             }
-            val density = activity.resources.displayMetrics.density
-            val realX = cx * density
-            val realY = cy * density
-            val downTime = SystemClock.uptimeMillis()
-            val down = MotionEvent.obtain(
-                downTime, downTime, MotionEvent.ACTION_DOWN, realX, realY, 0
-            )
-            webView.dispatchTouchEvent(down)
-            webView.postDelayed({
-                val up = MotionEvent.obtain(
-                    downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, realX, realY, 0
-                )
-                webView.dispatchTouchEvent(up)
-                down.recycle()
-                up.recycle()
-                status.text = "Tapped — waiting for clearance…"
-            }, 120)
+            // Scroll it into the middle of the viewport, then tap after layout settles.
+            webView.evaluateJavascript(SCROLL_WIDGET_JS) {}
+            uiHandler.postDelayed({
+                webView.evaluateJavascript(FIND_WIDGET_JS) { res2 ->
+                    val c2 = res2?.removeSurrounding("\"").orEmpty()
+                    val x = c2.substringBefore(",").toFloatOrNull() ?: cx
+                    val y = c2.substringAfter(",", "").toFloatOrNull() ?: cy
+                    dispatchTap(webView, x, y)
+                    setStatus(status, "Tapped — waiting for clearance…", Style.GRAY)
+                    uiHandler.postDelayed({
+                        val cookies = CookieManager.getInstance().getCookie(siteUrl).orEmpty()
+                        if (cookies.contains("cf_clearance")) {
+                            setStatus(status, "Solved ✓ — tap Save & Close.", Style.GREEN)
+                        } else {
+                            autoTapCheckbox(webView, status, attemptsLeft - 1)
+                        }
+                    }, 3000)
+                }
+            }, 900)
         }
+    }
+
+    private fun dispatchTap(webView: WebView, cssX: Float, cssY: Float) {
+        val density = activity.resources.displayMetrics.density
+        val realX = cssX * density
+        val realY = cssY * density
+        val downTime = SystemClock.uptimeMillis()
+        val down = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_DOWN, realX, realY, 0
+        )
+        webView.dispatchTouchEvent(down)
+        webView.postDelayed({
+            val up = MotionEvent.obtain(
+                downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, realX, realY, 0
+            )
+            webView.dispatchTouchEvent(up)
+            down.recycle()
+            up.recycle()
+        }, 150)
     }
 
     /** Polls page state: solved (cf_clearance) vs challenge visible vs clean. */
@@ -166,7 +262,7 @@ class CfSettingsDialog(
             override fun run() {
                 val cookies = CookieManager.getInstance().getCookie(siteUrl).orEmpty()
                 if (cookies.contains("cf_clearance")) {
-                    status.text = "Solved ✓ — tap Save & Close."
+                    setStatus(status, "Solved ✓ — tap Save & Close.", Style.GREEN)
                     return
                 }
                 webView.evaluateJavascript(
@@ -175,10 +271,19 @@ class CfSettingsDialog(
                         "||h.includes(\"checking your browser\")||h.includes(\"just a moment\");})();"
                 ) { res ->
                     val challenged = res?.contains("true") == true
-                    status.text = if (challenged)
-                        "Challenge detected — tap Auto-tap checkbox (or tap the widget if you see it)."
-                    else
-                        "No challenge on this page — Save & Close, then try the extension."
+                    if (challenged) {
+                        setStatus(
+                            status,
+                            "Challenge detected — tap Auto-tap (or the widget if you see it).",
+                            Style.AMBER
+                        )
+                    } else {
+                        setStatus(
+                            status,
+                            "No challenge on this page — Save & Close, then try the extension.",
+                            Style.GRAY
+                        )
+                    }
                     poll = this
                     uiHandler.postDelayed(this, 2500)
                 }
@@ -190,5 +295,21 @@ class CfSettingsDialog(
     private fun stopDetection() {
         poll?.let { uiHandler.removeCallbacks(it) }
         poll = null
+    }
+
+    companion object {
+        private const val WIDGET_SELECTORS =
+            "document.querySelector('iframe[src*=\"challenges.cloudflare.com\"]')" +
+                "||document.querySelector('iframe[src*=\"turnstile\"]')" +
+                "||document.querySelector('.cf-turnstile iframe')" +
+                "||document.querySelector('#cf-turnstile iframe')"
+        private const val FIND_WIDGET_JS =
+            "(function(){var f=$WIDGET_SELECTORS;" +
+                "if(!f)return \"NO_WIDGET\";var r=f.getBoundingClientRect();" +
+                "if(r.width===0&&r.height===0)return \"0,0\";" +
+                "return (r.left+r.width/2)+\",\"+(r.top+r.height/2);})();"
+        private const val SCROLL_WIDGET_JS =
+            "(function(){var f=$WIDGET_SELECTORS;" +
+                "if(f){f.scrollIntoView({block:\"center\"});}return \"ok\";})();"
     }
 }
