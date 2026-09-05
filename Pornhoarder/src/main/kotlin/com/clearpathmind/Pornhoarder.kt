@@ -151,12 +151,68 @@ class Pornhoarder : MainAPI() {
         "article"
     )
 
-    private fun selectArticles(doc: org.jsoup.nodes.Document): List<SearchResponse> {
+    private fun selectArticles(root: org.jsoup.nodes.Element): List<SearchResponse> {
         for (sel in articleSelectors) {
-            val r = doc.select(sel).mapNotNull { it.toSearchResult() }
+            val r = root.select(sel).mapNotNull { it.toSearchResult() }
             if (r.isNotEmpty()) return r
         }
         return emptyList()
+    }
+
+    /** "Similar Videos" section → recommendations; falls back to page cards. */
+    private fun similarVideos(
+        doc: org.jsoup.nodes.Document,
+        currentUrl: String
+    ): List<SearchResponse>? {
+        var recs: List<SearchResponse> = emptyList()
+        val heading = doc.select("h1, h2, h3, h4, .title, .heading, .page-header")
+            .firstOrNull { it.text().contains("similar videos", ignoreCase = true) }
+        if (heading != null) {
+            var section: org.jsoup.nodes.Element? = heading.parent()
+            var depth = 0
+            while (section != null && depth < 4) {
+                recs = selectArticles(section)
+                if (recs.isNotEmpty()) break
+                section = section.parent()
+                depth++
+            }
+        }
+        if (recs.isEmpty()) recs = selectArticles(doc)
+        return recs.filter { it.url != currentUrl }.take(24).ifEmpty { null }
+    }
+
+    /** Duration in minutes from meta / info-block time strings / JSON-LD. */
+    private fun extractDurationMinutes(doc: org.jsoup.nodes.Document): Int? {
+        doc.selectFirst("meta[property=og:video:duration], meta[itemprop=duration], meta[name=duration]")
+            ?.attr("content")?.let { parseDurationMinutes(it)?.let { m -> return m } }
+        val scope = doc.selectFirst(".video-info, .video-details, .video-meta") ?: doc
+        for (sel in listOf(".duration", ".video-duration", "[class*=duration]", ".video-time", ".time")) {
+            scope.select(sel).forEach { el ->
+                parseDurationMinutes(el.text())?.let { m -> return m }
+            }
+        }
+        doc.select("script[type=application/ld+json]").forEach { s ->
+            parseDurationMinutes(s.data())?.let { m -> return m }
+        }
+        return null
+    }
+
+    private fun parseDurationMinutes(text: String): Int? {
+        Regex("""PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?""").find(text)?.let { m ->
+            if (m.value != "PT") {
+                val h = m.groupValues[1].toIntOrNull() ?: 0
+                val mi = m.groupValues[2].toIntOrNull() ?: 0
+                val s = m.groupValues[3].toIntOrNull() ?: 0
+                return (h * 60 + mi + s / 60).coerceAtLeast(1)
+            }
+        }
+        Regex("""\b(\d{1,3}):(\d{2})(?::(\d{2}))?\b""").find(text)?.let { m ->
+            val a = m.groupValues[1].toIntOrNull() ?: return null
+            val b = m.groupValues[2].toIntOrNull() ?: 0
+            val c = m.groupValues[3].toIntOrNull()
+            return if (c != null) (a * 60 + b).coerceAtLeast(1) else if (a == 0) 1 else a
+        }
+        return null
     }
 
     /** Legacy ajax fallback when the GET listing parses to nothing. */
@@ -344,12 +400,16 @@ class Pornhoarder : MainAPI() {
         val poster = fixUrlNull(document.selectFirst("[property='og:image']")?.attr("content"))
         val description = document.selectFirst("meta[property=og:description]")
             ?.attr("content")?.trim()
-        val tags = document.select(".video-tags a, .tags a").map { it.text().trim() }
+        val tags = document.select(".video-tags a, .tags a, a[rel=tag]")
+            .map { it.text().trim() }
             .filter { it.isNotBlank() }
+            .distinct()
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags.ifEmpty { null }
+            this.duration = extractDurationMinutes(document)
+            this.recommendations = similarVideos(document, url)
         }
     }
 
