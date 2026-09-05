@@ -86,37 +86,116 @@ class Pornhoarder : MainAPI() {
         if (cookies.isNotBlank()) mapOf("Cookie" to cookies) else emptyMap()
     }
 
-    private fun searchBody(query: String, latest: Boolean, page: Int): FormBody {
-        // NOTE: use add() (not addEncoded) so queries with spaces/symbols are
-        // URL-encoded; unencoded values made the server ignore the search term
-        // and return the default listing for every query.
-        return FormBody.Builder()
-            .add("search", query)
-            .add("sort", if (latest) "0" else "2")
-            .add("date", "0")
-            .add("servers[]", "40")
-            .add("servers[]", "45")
-            .add("servers[]", "12")
-            .add("servers[]", "29")
-            .add("servers[]", "25")
-            .add("servers[]", "41")
-            .add("servers[]", "46")
-            .add("servers[]", "17")
-            .add("servers[]", "44")
-            .add("servers[]", "42")
-            .add("servers[]", "43")
-            .add("author", "0")
-            .add("page", page.toString())
-            .build()
+    /**
+     * Discovers the site's live listing/search form (action URL + fields) so
+     * POST params track the site even when they change. Falls back to the
+     * legacy hardcoded body when discovery fails. Cached per session.
+     */
+    private var formCache: DiscoveredForm? = null
+    private data class DiscoveredForm(val action: String, val fields: Map<String, List<String>>)
+
+    private suspend fun discoverForm(): DiscoveredForm? {
+        formCache?.let { return it }
+        return try {
+            val doc = app.get(mainUrl, interceptor = cfKiller, headers = requestHeaders()).document
+            val form = doc.select("form").firstOrNull { f ->
+                f.selectFirst("input[name=search], input[name=s], input[name=q], input[name=query]") != null ||
+                    f.attr("action").contains("ajax", true) ||
+                    f.attr("action").contains("search", true)
+            } ?: return null
+            val actionAttr = form.attr("action")
+            val action = fixUrlNull(if (actionAttr.isBlank()) ajaxUrl else actionAttr) ?: ajaxUrl
+            val fields = mutableMapOf<String, MutableList<String>>()
+            form.select("input[name], select[name], textarea[name]").forEach { el ->
+                val fname = el.attr("name")
+                if (fname.isBlank()) return@forEach
+                when (el.tagName().lowercase()) {
+                    "input" -> {
+                        val t = el.attr("type").lowercase()
+                        if (t == "checkbox" || t == "radio") {
+                            if (el.hasAttr("checked")) {
+                                fields.getOrPut(fname) { mutableListOf() }
+                                    .add(el.attr("value").ifBlank { "1" })
+                            }
+                        } else if (t != "submit" && t != "button" && t != "image" && t != "file") {
+                            fields.getOrPut(fname) { mutableListOf() }.add(el.attr("value"))
+                        }
+                    }
+                    "select" -> {
+                        val selected = el.select("option[selected]")
+                        val opts = if (selected.isNotEmpty()) selected else el.select("option").take(1)
+                        opts.forEach { o ->
+                            fields.getOrPut(fname) { mutableListOf() }.add(o.attr("value"))
+                        }
+                    }
+                    else -> fields.getOrPut(fname) { mutableListOf() }.add(el.text())
+                }
+            }
+            DiscoveredForm(action, fields).also { formCache = it }
+        } catch (_: Exception) {
+            null
+        }
     }
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = if (request.data == "Latest" || request.data == "Popular") {
-            postDoc(ajaxUrl, searchBody("", request.data == "Latest", page))
-        } else {
-            getDoc("$mainUrl${request.data}?page=$page")
+    private fun buildListingBody(
+        query: String,
+        latest: Boolean,
+        page: Int,
+        form: DiscoveredForm?
+    ): Pair<String, FormBody> {
+        val action = form?.action ?: ajaxUrl
+        val b = FormBody.Builder()
+        var searchSet = false
+        var sortSet = false
+        var pageSet = false
+        var hasServers = false
+        form?.fields?.forEach { (fname, vals) ->
+            when {
+                fname.equals("search", true) || fname.equals("s", true) ||
+                    fname.equals("q", true) || fname.equals("query", true) -> {
+                    b.add(fname, query)
+                    searchSet = true
+                }
+                fname.equals("sort", true) || fname.equals("orderby", true) ||
+                    fname.equals("order", true) -> {
+                    b.add(fname, if (latest) "0" else "2")
+                    sortSet = true
+                }
+                fname.equals("page", true) || fname.equals("paged", true) -> {
+                    b.add(fname, page.toString())
+                    pageSet = true
+                }
+                fname.equals("servers[]", true) || fname.equals("servers", true) -> {
+                    vals.forEach { b.add(fname, it) }
+                    hasServers = true
+                }
+                else -> vals.forEach { b.add(fname, it) }
+            }
         }
-        val home = document.select(".video article").mapNotNull { it.toSearchResult() }
+        if (!searchSet) b.add("search", query)
+        if (!sortSet) b.add("sort", if (latest) "0" else "2")
+        if (!pageSet) b.add("page", page.toString())
+        if (form == null && !hasServers) {
+            // NOTE: use add() (not addEncoded) so values are URL-encoded.
+            listOf("40", "45", "12", "29", "25", "41", "46", "17", "44", "42", "43")
+                .forEach { b.add("servers[]", it) }
+            b.add("date", "0")
+            b.add("author", "0")
+        }
+        return action to b.build()
+    }
+
+    private fun selectArticles(doc: org.jsoup.nodes.Document): List<SearchResponse> =
+        doc.select(".video article").mapNotNull { it.toSearchResult() }
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val home = if (request.data == "Latest" || request.data == "Popular") {
+            val form = discoverForm()
+            val (action, body) = buildListingBody("", request.data == "Latest", page, form)
+            selectArticles(postDoc(action, body))
+        } else {
+            selectArticles(getDoc("$mainUrl${request.data}?page=$page"))
+        }
         return newHomePageResponse(
             HomePageList(request.name, home, isHorizontalImages = true),
             hasNext = home.isNotEmpty()
@@ -127,7 +206,8 @@ class Pornhoarder : MainAPI() {
         val title = this.select(".video-content h1").text()
             .replace("| PornHoarder.tv", "").trim()
             .ifBlank { return null }
-        val href = fixUrlNull(mainUrl + this.select(".video-link").attr("href"))
+        val rawHref = this.select(".video-link").attr("href").ifBlank { return null }
+        val href = fixUrlNull(if (rawHref.startsWith("http")) rawHref else mainUrl + rawHref)
             ?: return null
         val posterUrl = fixUrlNull(
             this.selectFirst(".video-image.primary.b-lazy")?.attr("data-src")
@@ -140,8 +220,23 @@ class Pornhoarder : MainAPI() {
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList? {
-        val document = postDoc(ajaxUrl, searchBody(query, true, page))
-        val results = document.select(".video article").mapNotNull { it.toSearchResult() }
+        val q = query.trim()
+        val form = discoverForm()
+        val (action, body) = buildListingBody(q, true, page, form)
+        var results = selectArticles(postDoc(action, body))
+        // Fallback: plain GET search URLs when the ajax endpoint yields nothing.
+        if (results.isEmpty() && q.isNotBlank()) {
+            for (u in listOf("$mainUrl/search/$q/", "$mainUrl/?s=$q")) {
+                try {
+                    val r = selectArticles(getDoc(u))
+                    if (r.isNotEmpty()) {
+                        results = r
+                        break
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        }
         return newSearchResponseList(results, results.isNotEmpty())
     }
 

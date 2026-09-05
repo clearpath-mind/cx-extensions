@@ -5,9 +5,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.view.Gravity
-import android.view.MotionEvent
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebView
@@ -18,10 +16,10 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 
 /**
- * Cloudflare solver dialog: shows the challenge page full-screen with an
- * "Auto-tap" button that scrolls the Turnstile widget into view and taps it
- * (up to 3 attempts). Solved cookies are persisted via [CloudflareSolver]
- * and attached to every [Pornhoarder] request.
+ * PornHoarder settings: full-screen WebView for the Cloudflare check plus
+ * orientation quick-set buttons (Straight / Bi / Gay) that tap the site's
+ * own orientation control. Cookies (including the orientation choice) are
+ * persisted via [CloudflareSolver] and attached to every [Pornhoarder] request.
  */
 class CfSettingsDialog(
     private val activity: AppCompatActivity,
@@ -51,17 +49,23 @@ class CfSettingsDialog(
             setPadding(Style.PAD, Style.PAD, Style.PAD, 4)
         }
         val subtitle = TextView(activity).apply {
-            text = "Cloudflare check"
+            text = "Cloudflare check & orientation"
             setTextColor(Color.parseColor(Style.DIM))
             textSize = 14f
             setPadding(Style.PAD, 0, Style.PAD, 16)
         }
         val status = TextView(activity).apply {
-            text = "Loading challenge page…"
+            text = "Loading…"
             setTextColor(Color.parseColor(Style.GRAY))
             textSize = 15f
             setPadding(Style.PAD, 28, Style.PAD, 28)
             setBackgroundColor(Color.parseColor(Style.CARD))
+        }
+        val orientationLabel = TextView(activity).apply {
+            text = "My sexual orientation"
+            setTextColor(Color.parseColor(Style.DIM))
+            textSize = 14f
+            setPadding(Style.PAD, 20, Style.PAD, 8)
         }
         val webView = WebView(activity)
         webView.layoutParams = LinearLayout.LayoutParams(
@@ -90,8 +94,16 @@ class CfSettingsDialog(
         }
 
         var dialog: Dialog? = null
-        val autoTap = styledButton("Auto-tap") {
-            autoTapCheckbox(webView, status, attemptsLeft = 3)
+        val straight = styledButton("I'm Straight") { setOrientation(webView, status, "straight") }
+        val bi = styledButton("Bi") { setOrientation(webView, status, "bi") }
+        val gay = styledButton("Gay") { setOrientation(webView, status, "gay") }
+        val orientationRow = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(16, 0, 16, 8)
+            addView(straight, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(bi, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(gay, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
         val reload = styledButton("Reload") {
             setStatus(status, "Reloading…", Style.GRAY)
@@ -105,8 +117,7 @@ class CfSettingsDialog(
         val buttons = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(16, 20, 16, 20)
-            addView(autoTap, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            setPadding(16, 8, 16, 20)
             addView(reload, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(save, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
@@ -132,9 +143,23 @@ class CfSettingsDialog(
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply { setMargins(Style.PAD, 0, Style.PAD, 16) }
+                ).apply { setMargins(Style.PAD, 0, Style.PAD, 8) }
             )
             addView(webView)
+            addView(
+                orientationLabel,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+            addView(
+                orientationRow,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
             addView(
                 buttons,
                 LinearLayout.LayoutParams(
@@ -183,76 +208,37 @@ class CfSettingsDialog(
     }
 
     /**
-     * Finds the Turnstile widget (multiple selector fallbacks), scrolls it
-     * into view, waits for layout, then dispatches a real tap. Retries with
-     * status updates so failures are visible instead of silent.
+     * Taps the site's own orientation control by matching clickable elements
+     * ("I'm Straight" / "Bi" / "Gay"). The site stores the choice itself;
+     * Save & Close persists it with the cookies.
      */
-    private fun autoTapCheckbox(webView: WebView, status: TextView, attemptsLeft: Int) {
-        if (attemptsLeft <= 0) {
-            setStatus(
-                status,
-                "Auto-tap failed after 3 tries — tap the widget manually, then Save & Close.",
-                Style.AMBER
-            )
-            return
-        }
-        setStatus(status, "Looking for checkbox… (try ${4 - attemptsLeft}/3)", Style.GRAY)
-        webView.evaluateJavascript(FIND_WIDGET_JS) { res ->
+    private fun setOrientation(webView: WebView, status: TextView, want: String) {
+        setStatus(status, "Setting orientation: $want…", Style.GRAY)
+        webView.evaluateJavascript(
+            "(function(){var want=\"$want\";" +
+                "var els=document.querySelectorAll('a,button,input[type=button],input[type=submit]');" +
+                "for(var i=0;i<els.length;i++){" +
+                "var t=((els[i].innerText||els[i].value||'').trim().toLowerCase());" +
+                "if(t.length>40)continue;" +
+                "var hit=(want==='straight')?t.indexOf('straight')>=0:t===want;" +
+                "if(hit){els[i].click();return 'tapped:'+t;}}" +
+                "return 'notfound';})();"
+        ) { res ->
             val clean = res?.removeSurrounding("\"").orEmpty()
-            if (clean == "NO_WIDGET") {
+            if (clean.startsWith("tapped:")) {
                 setStatus(
                     status,
-                    "No Turnstile widget in page — Reload and try again.",
+                    "Orientation set (${clean.removePrefix("tapped:")}) — Save & Close to keep it.",
+                    Style.GREEN
+                )
+            } else {
+                setStatus(
+                    status,
+                    "Orientation option not found on this page — set it in the page above, then Save & Close.",
                     Style.AMBER
                 )
-                return@evaluateJavascript
             }
-            val cx = clean.substringBefore(",").toFloatOrNull()
-            val cy = clean.substringAfter(",", "").toFloatOrNull()
-            if (cx == null || cy == null) {
-                setStatus(status, "Widget not laid out yet ($clean) — retrying…", Style.GRAY)
-                uiHandler.postDelayed({ autoTapCheckbox(webView, status, attemptsLeft - 1) }, 1500)
-                return@evaluateJavascript
-            }
-            // Scroll it into the middle of the viewport, then tap after layout settles.
-            webView.evaluateJavascript(SCROLL_WIDGET_JS) {}
-            uiHandler.postDelayed({
-                webView.evaluateJavascript(FIND_WIDGET_JS) { res2 ->
-                    val c2 = res2?.removeSurrounding("\"").orEmpty()
-                    val x = c2.substringBefore(",").toFloatOrNull() ?: cx
-                    val y = c2.substringAfter(",", "").toFloatOrNull() ?: cy
-                    dispatchTap(webView, x, y)
-                    setStatus(status, "Tapped — waiting for clearance…", Style.GRAY)
-                    uiHandler.postDelayed({
-                        val cookies = CookieManager.getInstance().getCookie(siteUrl).orEmpty()
-                        if (cookies.contains("cf_clearance")) {
-                            setStatus(status, "Solved ✓ — tap Save & Close.", Style.GREEN)
-                        } else {
-                            autoTapCheckbox(webView, status, attemptsLeft - 1)
-                        }
-                    }, 3000)
-                }
-            }, 900)
         }
-    }
-
-    private fun dispatchTap(webView: WebView, cssX: Float, cssY: Float) {
-        val density = activity.resources.displayMetrics.density
-        val realX = cssX * density
-        val realY = cssY * density
-        val downTime = SystemClock.uptimeMillis()
-        val down = MotionEvent.obtain(
-            downTime, downTime, MotionEvent.ACTION_DOWN, realX, realY, 0
-        )
-        webView.dispatchTouchEvent(down)
-        webView.postDelayed({
-            val up = MotionEvent.obtain(
-                downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, realX, realY, 0
-            )
-            webView.dispatchTouchEvent(up)
-            down.recycle()
-            up.recycle()
-        }, 150)
     }
 
     /** Polls page state: solved (cf_clearance) vs challenge visible vs clean. */
@@ -274,7 +260,7 @@ class CfSettingsDialog(
                     if (challenged) {
                         setStatus(
                             status,
-                            "Challenge detected — tap Auto-tap (or the widget if you see it).",
+                            "Challenge detected — tap the checkbox in the page above.",
                             Style.AMBER
                         )
                     } else {
@@ -295,21 +281,5 @@ class CfSettingsDialog(
     private fun stopDetection() {
         poll?.let { uiHandler.removeCallbacks(it) }
         poll = null
-    }
-
-    companion object {
-        private const val WIDGET_SELECTORS =
-            "document.querySelector('iframe[src*=\"challenges.cloudflare.com\"]')" +
-                "||document.querySelector('iframe[src*=\"turnstile\"]')" +
-                "||document.querySelector('.cf-turnstile iframe')" +
-                "||document.querySelector('#cf-turnstile iframe')"
-        private const val FIND_WIDGET_JS =
-            "(function(){var f=$WIDGET_SELECTORS;" +
-                "if(!f)return \"NO_WIDGET\";var r=f.getBoundingClientRect();" +
-                "if(r.width===0&&r.height===0)return \"0,0\";" +
-                "return (r.left+r.width/2)+\",\"+(r.top+r.height/2);})();"
-        private const val SCROLL_WIDGET_JS =
-            "(function(){var f=$WIDGET_SELECTORS;" +
-                "if(f){f.scrollIntoView({block:\"center\"});}return \"ok\";})();"
     }
 }
