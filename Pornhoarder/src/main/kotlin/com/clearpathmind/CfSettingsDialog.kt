@@ -24,32 +24,31 @@ class CfSettingsDialog(
             text = "Solve the challenge below, then close. Cookies are saved automatically."
             setPadding(32, 24, 32, 24)
         }
-        val webView = WebView(activity).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-            )
-            settings.apply {
-                javaScriptEnabled = true
-                domStorageEnabled = true
-                databaseEnabled = true
-                userAgentString = Pornhoarder.USER_AGENT
-                useWideViewPort = true
-                loadWithOverviewMode = true
-            }
-            CookieManager.getInstance().apply {
-                setAcceptCookie(true)
-                setAcceptThirdPartyCookies(this@apply, true)
-            }
-            webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    super.onPageFinished(view, url)
-                    status.text = "Page loaded. Tap \"Verify you are human\" if shown, then close."
-                }
-            }
-            loadUrl(siteUrl)
+        val webView = WebView(activity)
+        webView.layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            0,
+            1f
+        )
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            databaseEnabled = true
+            userAgentString = Pornhoarder.USER_AGENT
+            useWideViewPort = true
+            loadWithOverviewMode = true
         }
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            setAcceptThirdPartyCookies(webView, true)
+        }
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                status.text = "Page loaded. Tap \"Verify you are human\" if shown, then close."
+            }
+        }
+        webView.loadUrl(siteUrl)
         val layout = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             addView(
