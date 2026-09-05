@@ -92,7 +92,10 @@ class Pornhoarder : MainAPI() {
         "$mainUrl/search/?search=&sort=0" to "Latest Videos",
         "$mainUrl/search/?search=&sort=2" to "Popular Videos",
         "$mainUrl/trending-videos/" to "Trending Videos",
-        "$mainUrl/random-videos/" to "Random Videos"
+        "$mainUrl/random-videos/" to "Random Videos",
+        "$mainUrl/categories/" to "Categories",
+        "$mainUrl/pornstars/" to "Pornstars",
+        "$mainUrl/studios/" to "Studios"
     )
 
     private fun requestHeaders() = mapOf(
@@ -140,7 +143,58 @@ class Pornhoarder : MainAPI() {
         return b.build()
     }
 
+    /** Index pages (categories / pornstars / studios) with path fallbacks. */
+    private val indexPaths = mapOf(
+        "Categories" to listOf("/categories/"),
+        "Pornstars" to listOf("/pornstars/", "/pornstar/", "/models/"),
+        "Studios" to listOf("/studios/", "/channels/")
+    )
+
+    private suspend fun fetchIndex(name: String): List<SearchResponse> {
+        for (p in indexPaths[name].orEmpty()) {
+            try {
+                val r = selectIndex(getDoc(withHost("$mainUrl$p", mainUrl)))
+                if (r.isNotEmpty()) return r
+            } catch (_: Exception) {
+            }
+        }
+        return emptyList()
+    }
+
+    /** Parses index grids: anchors wrapping a thumbnail image + short label. */
+    private fun selectIndex(doc: org.jsoup.nodes.Document): List<SearchResponse> {
+        val skipPaths = setOf("/", "/login", "/login/", "/signup", "/sign-up", "/settings",
+            "/settings/", "/contact", "/contact/", "/abuse", "/about")
+        return doc.select("a[href]").mapNotNull { a ->
+            val raw = a.attr("href").trim()
+            if (raw.isBlank()) return@mapNotNull null
+            val abs = fixUrlNull(if (raw.startsWith("http")) raw else mainUrl + raw)
+                ?: return@mapNotNull null
+            if (!abs.startsWith(mainUrl)) return@mapNotNull null
+            if (abs.removePrefix(mainUrl) in skipPaths) return@mapNotNull null
+            val img = a.selectFirst("img") ?: return@mapNotNull null
+            val title = img.attr("alt").trim()
+                .ifBlank { a.selectFirst("span, strong, b, h2, h3")?.text()?.trim().orEmpty() }
+                .ifBlank { a.text().trim() }
+                .ifBlank { return@mapNotNull null }
+            if (title.length > 60) return@mapNotNull null
+            val poster = fixUrlNull(
+                img.attr("data-src").ifBlank { null } ?: img.attr("src").ifBlank { null }
+            ) ?: return@mapNotNull null
+            newMovieSearchResponse(title, abs, TvType.NSFW) {
+                this.posterUrl = poster
+            }
+        }.distinctBy { it.url }.take(200)
+    }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        if (request.name in indexPaths) {
+            val home = if (page > 1) emptyList() else fetchIndex(request.name)
+            return newHomePageResponse(
+                HomePageList(request.name, home, isHorizontalImages = true),
+                hasNext = false
+            )
+        }
         val base = withHost(request.data, mainUrl)
         val sep = if (base.contains("?")) "&" else "?"
         val url = if (page > 1) "$base${sep}page=$page" else base
@@ -189,12 +243,58 @@ class Pornhoarder : MainAPI() {
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList? {
-        val results = selectArticles(getDoc(listingUrl(query.trim(), sort = "0", page)))
-        return newSearchResponseList(results, results.isNotEmpty())
+        val q = query.trim()
+        if (q.isBlank()) return newSearchResponseList(emptyList(), false)
+        val enc = java.net.URLEncoder.encode(q, "UTF-8")
+        val pageSuffix = if (page > 1) "&page=$page" else ""
+        val candidates = listOf(
+            "$mainUrl/search/?search=$enc&sort=0$pageSuffix",
+            "$mainUrl/search/?search=$enc$pageSuffix",
+            "$mainUrl/search/?search=$enc&sort=2$pageSuffix",
+            "$mainUrl/search/$enc/"
+        )
+        // Reference feed: reject candidate sets identical to unfiltered Latest.
+        val latestUrls = try {
+            selectArticles(getDoc(listingUrl("", "0", 1))).map { it.url }.toSet()
+        } catch (_: Exception) {
+            emptySet()
+        }
+        for (u in candidates) {
+            try {
+                val r = selectArticles(getDoc(u))
+                if (r.isEmpty()) continue
+                val urls = r.map { it.url }.toSet()
+                if (latestUrls.isNotEmpty() && urls == latestUrls) continue
+                return newSearchResponseList(r, true)
+            } catch (_: Exception) {
+            }
+        }
+        // Last resort: legacy ajax (may be unfiltered, but non-empty).
+        try {
+            val r = selectArticles(postDoc("$mainUrl/ajax_search.php", legacyBody(q, true, page)))
+            if (r.isNotEmpty()) return newSearchResponseList(r, true)
+        } catch (_: Exception) {
+        }
+        return newSearchResponseList(emptyList(), false)
     }
 
     override suspend fun load(url: String): LoadResponse {
         val document = getDoc(url)
+        if (document.selectFirst(".video-player") == null) {
+            // Index page (category / pornstar / studio): expose its videos.
+            val title = document.selectFirst("h1")?.text()?.trim()
+                ?.ifBlank { null }
+                ?: document.selectFirst("meta[property=og:title]")
+                    ?.attr("content")?.trim()?.replace("| PornHoarder.tv", "")
+                ?: "PornHoarder"
+            val poster = fixUrlNull(document.selectFirst("[property='og:image']")?.attr("content"))
+            val recs = selectArticles(document)
+            return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+                this.posterUrl = poster
+                this.plot = if (recs.isEmpty()) null else "Browse — ${recs.size} videos"
+                this.recommendations = recs.ifEmpty { null }
+            }
+        }
         val title = document.selectFirst("meta[property=og:title]")
             ?.attr("content")?.trim()?.replace("| PornHoarder.tv", "")
             ?.ifBlank { null } ?: "PornHoarder video"
