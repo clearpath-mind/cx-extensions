@@ -16,13 +16,15 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 
 /**
- * PornHoarder settings: full-screen WebView for the Cloudflare check.
- * Auto-closes shortly after clearance is detected; cookies are persisted
- * via [CloudflareSolver] and attached to every [Pornhoarder] request.
+ * PornHoarder settings: full-screen WebView opening the site settings page
+ * (/settings/) so the Cloudflare challenge can be solved and the sexual
+ * orientation set to Straight directly. Nothing auto-closes: tap
+ * Save & Close yourself — cookies are persisted via [CloudflareSolver]
+ * and attached to every [Pornhoarder] request.
  */
 class CfSettingsDialog(
     private val activity: AppCompatActivity,
-    private val siteUrl: String = "https://ww8.pornhoarder.org"
+    private val siteUrl: String = "https://ww8.pornhoarder.org/settings/"
 ) {
     private val uiHandler = Handler(Looper.getMainLooper())
     private var poll: Runnable? = null
@@ -48,7 +50,7 @@ class CfSettingsDialog(
             setPadding(Style.PAD, Style.PAD, Style.PAD, 4)
         }
         val subtitle = TextView(activity).apply {
-            text = "Cloudflare check"
+            text = "Solve the challenge, set orientation to Straight, then Save & Close"
             setTextColor(Color.parseColor(Style.DIM))
             textSize = 14f
             setPadding(Style.PAD, 0, Style.PAD, 16)
@@ -83,12 +85,7 @@ class CfSettingsDialog(
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 setStatus(status, "Page loaded — checking for challenge…", Style.GRAY)
-                startDetection(webView, status) {
-                    // Auto Save & Close shortly after clearance is detected.
-                    CloudflareSolver.saveCookies(siteUrl, Pornhoarder.USER_AGENT)
-                    CookieManager.getInstance().flush()
-                    uiHandler.postDelayed({ dialog?.dismiss() }, 1200)
-                }
+                startDetection(webView, status)
             }
         }
 
@@ -180,15 +177,17 @@ class CfSettingsDialog(
         status.setTextColor(Color.parseColor(colorHex))
     }
 
-    /** Polls page state: solved (cf_clearance) vs challenge visible vs clean. */
-    private fun startDetection(webView: WebView, status: TextView, onSolved: () -> Unit) {
+    /** Polls page state: solved (cf_clearance) vs challenge visible vs clean.
+     * Never auto-closes: the user taps Save & Close manually. */
+    private fun startDetection(webView: WebView, status: TextView) {
         stopDetection()
         val task = object : Runnable {
             override fun run() {
                 val cookies = CookieManager.getInstance().getCookie(siteUrl).orEmpty()
                 if (cookies.contains("cf_clearance")) {
-                    setStatus(status, "Solved ✓ — closing…", Style.GREEN)
-                    onSolved()
+                    setStatus(status, "Solved ✓ — set orientation above, then Save & Close.", Style.GREEN)
+                    poll = this
+                    uiHandler.postDelayed(this, 5000)
                     return
                 }
                 webView.evaluateJavascript(

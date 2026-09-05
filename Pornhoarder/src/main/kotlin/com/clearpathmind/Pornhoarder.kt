@@ -328,9 +328,13 @@ class Pornhoarder : MainAPI() {
         val poster = fixUrlNull(document.selectFirst("[property='og:image']")?.attr("content"))
         val description = document.selectFirst("meta[property=og:description]")
             ?.attr("content")?.trim()
-        val tags = document.select(".video-tags a, .tags a, a[rel=tag]")
+        val scope = document.selectFirst("main") ?: document
+        val tags = (
+            document.select(".video-tags a, .tags a, a[rel=tag]") +
+                scope.select("a[href*=tag]")
+            )
             .map { it.text().trim() }
-            .filter { it.isNotBlank() }
+            .filter { it.isNotBlank() && it.length <= 40 && !it.contains(" ") }
             .distinct()
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
