@@ -90,7 +90,9 @@ class Pornhoarder : MainAPI() {
     // Popular → /search/?search=&sort=2
     override val mainPage = mainPageOf(
         "$mainUrl/search/?search=&sort=0" to "Latest Videos",
-        "$mainUrl/search/?search=&sort=2" to "Popular Videos"
+        "$mainUrl/search/?search=&sort=2" to "Popular Videos",
+        "$mainUrl/trending-videos/" to "Trending Videos",
+        "$mainUrl/random-videos/" to "Random Videos"
     )
 
     private fun requestHeaders() = mapOf(
@@ -110,7 +112,9 @@ class Pornhoarder : MainAPI() {
         doc.select(".video article").mapNotNull { it.toSearchResult() }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = withHost(request.data, mainUrl) + if (page > 1) "&page=$page" else ""
+        val base = withHost(request.data, mainUrl)
+        val sep = if (base.contains("?")) "&" else "?"
+        val url = if (page > 1) "$base${sep}page=$page" else base
         val home = selectArticles(getDoc(url))
         return newHomePageResponse(
             HomePageList(request.name, home, isHorizontalImages = true),
