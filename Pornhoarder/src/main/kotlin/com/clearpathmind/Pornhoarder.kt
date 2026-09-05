@@ -92,10 +92,7 @@ class Pornhoarder : MainAPI() {
         "$mainUrl/search/?search=&sort=0" to "Latest Videos",
         "$mainUrl/search/?search=&sort=2" to "Popular Videos",
         "$mainUrl/trending-videos/" to "Trending Videos",
-        "$mainUrl/random-videos/" to "Random Videos",
-        "$mainUrl/categories/" to "Categories",
-        "$mainUrl/pornstars/" to "Pornstars",
-        "$mainUrl/studios/" to "Studios"
+        "$mainUrl/random-videos/" to "Random Videos"
     )
 
     private fun requestHeaders() = mapOf(
@@ -238,75 +235,7 @@ class Pornhoarder : MainAPI() {
         return b.build()
     }
 
-    /** Index pages (categories / pornstars / studios) with path fallbacks. */
-    private val indexPaths = mapOf(
-        "Categories" to listOf("/categories/"),
-        "Pornstars" to listOf("/pornstars/", "/pornstar/", "/models/"),
-        "Studios" to listOf("/studios/", "/channels/")
-    )
-
-    private suspend fun fetchIndex(name: String): List<SearchResponse> {
-        for (p in indexPaths[name].orEmpty()) {
-            try {
-                val doc = getDoc(withHost("$mainUrl$p", mainUrl))
-                val grids = selectIndex(doc)
-                if (grids.isNotEmpty()) return grids
-                // Fallback: some index pages list videos directly.
-                val vids = selectArticles(doc)
-                if (vids.isNotEmpty()) return vids
-            } catch (_: Exception) {
-            }
-        }
-        return emptyList()
-    }
-
-    /** Parses index grids inside <main> (nav lives in <aside>, so it's excluded
-     * structurally). Accepts <img> or CSS background-image thumbnails. */
-    private fun selectIndex(doc: org.jsoup.nodes.Document): List<SearchResponse> {
-        val skipPaths = setOf("/", "/hp", "/hp/", "/login", "/login/", "/signup",
-            "/sign-up", "/settings", "/settings/", "/contact", "/contact/",
-            "/abuse", "/about", "/search", "/search/")
-        val scope = doc.selectFirst("main") ?: doc
-        return scope.select("a[href]").mapNotNull { a ->
-            val raw = a.attr("href").trim()
-            if (raw.isBlank()) return@mapNotNull null
-            val abs = fixUrlNull(if (raw.startsWith("http")) raw else mainUrl + raw)
-                ?: return@mapNotNull null
-            if (!abs.startsWith(mainUrl)) return@mapNotNull null
-            if (abs.removePrefix(mainUrl).substringBefore("?") in skipPaths) return@mapNotNull null
-            val img = a.selectFirst("img")
-            val bgUrl = a.select("[style*=url]").firstNotNullOfOrNull { el ->
-                Regex("""url\(['"]?(.*?)['"]?\)""")
-                    .find(el.attr("style"))?.groupValues?.get(1)
-                    ?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
-            } ?: Regex("""url\(['"]?(.*?)['"]?\)""")
-                .find(a.attr("style"))?.groupValues?.get(1)
-                ?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
-            val poster = fixUrlNull(
-                img?.attr("data-src")?.ifBlank { null }
-                    ?: img?.attr("src")?.ifBlank { null }
-                    ?: bgUrl
-            ) ?: return@mapNotNull null
-            val title = (img?.attr("alt")?.trim().orEmpty())
-                .ifBlank { a.selectFirst("span, strong, b, h2, h3")?.text()?.trim().orEmpty() }
-                .ifBlank { a.text().trim() }
-                .ifBlank { return@mapNotNull null }
-            if (title.length > 80) return@mapNotNull null
-            newMovieSearchResponse(title, abs, TvType.NSFW) {
-                this.posterUrl = poster
-            }
-        }.distinctBy { it.url }.take(200)
-    }
-
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        ensureStraightOrientation()
-        if (request.name in indexPaths) {
-            val home = if (page > 1) emptyList() else fetchIndex(request.name)
-            return newHomePageResponse(
-                HomePageList(request.name, home, isHorizontalImages = true),
-                hasNext = false
-            )
-        }
         val base = withHost(request.data, mainUrl)
         val sep = if (base.contains("?")) "&" else "?"
         val url = if (page > 1) "$base${sep}page=$page" else base
@@ -393,21 +322,6 @@ class Pornhoarder : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse {
         val document = getDoc(url)
-        if (document.selectFirst(".video-player") == null) {
-            // Index page (category / pornstar / studio): expose its videos.
-            val title = document.selectFirst("h1")?.text()?.trim()
-                ?.ifBlank { null }
-                ?: document.selectFirst("meta[property=og:title]")
-                    ?.attr("content")?.trim()?.replace("| PornHoarder.tv", "")
-                ?: "PornHoarder"
-            val poster = fixUrlNull(document.selectFirst("[property='og:image']")?.attr("content"))
-            val recs = selectArticles(document)
-            return newMovieLoadResponse(title, url, TvType.NSFW, url) {
-                this.posterUrl = poster
-                this.plot = if (recs.isEmpty()) null else "Browse — ${recs.size} videos"
-                this.recommendations = recs.ifEmpty { null }
-            }
-        }
         val title = document.selectFirst("meta[property=og:title]")
             ?.attr("content")?.trim()?.replace("| PornHoarder.tv", "")
             ?.ifBlank { null } ?: "PornHoarder video"
