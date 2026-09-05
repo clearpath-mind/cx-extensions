@@ -26,7 +26,7 @@ import okhttp3.FormBody
 import org.jsoup.nodes.Element
 
 class Pornhoarder : MainAPI() {
-    override var mainUrl = "https://pornhoarder.tv"
+    override var mainUrl = "https://ww3.pornhoarder.org"
     override var name = "PornHoarder"
     override val hasMainPage = true
     override var lang = "en"
@@ -38,6 +38,39 @@ class Pornhoarder : MainAPI() {
 
     private val cfKiller get() = CloudflareKiller()
     private val ajaxUrl get() = "$mainUrl/ajax_search.php"
+
+    /** Previous primary domain (currently Cloudflare edge-broken, Error 1034). */
+    private val fallbackUrl = "https://pornhoarder.tv"
+
+    /** GET with mirror fallback: primary → fallback on edge-dead pages. */
+    private suspend fun getDoc(url: String) = fetchWithFallback(url, isPost = false, body = null)
+
+    /** POST with mirror fallback. */
+    private suspend fun postDoc(url: String, body: FormBody) =
+        fetchWithFallback(url, isPost = true, body = body)
+
+    private suspend fun fetchWithFallback(
+        url: String,
+        isPost: Boolean,
+        body: FormBody?
+    ): org.jsoup.nodes.Document {
+        val attempts = listOf(url, url.replace(mainUrl, fallbackUrl)).distinct()
+        var lastEdgeError: ErrorLoadingException? = null
+        for (attempt in attempts) {
+            val html = if (isPost && body != null) {
+                app.post(attempt, requestBody = body, interceptor = cfKiller, headers = requestHeaders()).text
+            } else {
+                app.get(attempt, interceptor = cfKiller, headers = requestHeaders()).text
+            }
+            if (EDGE_MARKERS.any { html.contains(it, ignoreCase = true) }) {
+                lastEdgeError = ErrorLoadingException("Site unreachable (Cloudflare edge) — try again later")
+                continue
+            }
+            checkNotBlocked(html)
+            return org.jsoup.Jsoup.parse(html)
+        }
+        throw lastEdgeError ?: ErrorLoadingException("Site unreachable (Cloudflare edge) — try again later")
+    }
 
     override val mainPage = mainPageOf(
         "Latest" to "Latest Videos",
@@ -76,20 +109,10 @@ class Pornhoarder : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = if (request.data == "Latest" || request.data == "Popular") {
-            app.post(
-                ajaxUrl,
-                requestBody = searchBody("", request.data == "Latest", page),
-                interceptor = cfKiller,
-                headers = requestHeaders()
-            ).document
+            postDoc(ajaxUrl, searchBody("", request.data == "Latest", page))
         } else {
-            app.get(
-                "$mainUrl${request.data}?page=$page",
-                interceptor = cfKiller,
-                headers = requestHeaders()
-            ).document
+            getDoc("$mainUrl${request.data}?page=$page")
         }
-        checkNotBlocked(document.html())
         val home = document.select(".video article").mapNotNull { it.toSearchResult() }
         return newHomePageResponse(
             HomePageList(request.name, home, isHorizontalImages = true),
@@ -114,20 +137,13 @@ class Pornhoarder : MainAPI() {
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList? {
-        val document = app.post(
-            ajaxUrl,
-            requestBody = searchBody(query, true, page),
-            interceptor = cfKiller,
-            headers = requestHeaders()
-        ).document
-        checkNotBlocked(document.html())
+        val document = postDoc(ajaxUrl, searchBody(query, true, page))
         val results = document.select(".video article").mapNotNull { it.toSearchResult() }
         return newSearchResponseList(results, results.isNotEmpty())
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, interceptor = cfKiller, headers = requestHeaders()).document
-        checkNotBlocked(document.html())
+        val document = getDoc(url)
         val title = document.selectFirst("meta[property=og:title]")
             ?.attr("content")?.trim()?.replace("| PornHoarder.tv", "")
             ?.ifBlank { null } ?: "PornHoarder video"
@@ -149,8 +165,7 @@ class Pornhoarder : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val doc = app.get(data, interceptor = cfKiller, headers = requestHeaders()).document
-        checkNotBlocked(doc.html())
+        val doc = getDoc(data)
         val serverPages = mutableListOf(data)
         doc.select(".video-detail-servers li a").forEach { item ->
             fixUrlNull(mainUrl + item.attr("href"))?.let { serverPages.add(it) }
@@ -158,11 +173,11 @@ class Pornhoarder : MainAPI() {
         var found = false
         serverPages.distinct().forEach { pageUrl ->
             val pageDoc = if (pageUrl == data) doc else
-                app.get(pageUrl, interceptor = cfKiller, headers = requestHeaders()).document
+                getDoc(pageUrl)
             val iframeSrc = fixUrlNull(pageDoc.selectFirst(".video-player iframe")?.attr("src"))
                 ?: return@forEach
             val playBody = FormBody.Builder().addEncoded("play", "").build()
-            val innerDoc = app.post(iframeSrc, requestBody = playBody, headers = requestHeaders()).document
+            val innerDoc = postDoc(iframeSrc, playBody)
             val hosterUrl = fixUrlNull(innerDoc.selectFirst("iframe")?.attr("src"))
                 ?: return@forEach
             if (loadExtractor(hosterUrl, data, subtitleCallback, callback)) found = true
@@ -184,7 +199,12 @@ class Pornhoarder : MainAPI() {
             "just a moment",
             "cf-challenge",
             "cf_clearance",
-            "attention required"
+            "attention required",
+            "verify you are human"
+        )
+        private val EDGE_MARKERS = listOf(
+            "edge ip restricted",
+            "error 1034"
         )
     }
 }

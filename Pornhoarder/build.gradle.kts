@@ -1,9 +1,9 @@
-version = 1
+version = 2
 
 cloudstream {
     authors = listOf("clearpath-mind")
     language = "en"
-    description = "PornHoarder - pornhoarder.tv with Cloudflare handling"
+    description = "PornHoarder - mirror domain with Cloudflare handling"
 
     /**
      * Status int as the following:
@@ -14,5 +14,10 @@ cloudstream {
      **/
     status = 1 // will be 3 if unspecified
     tvTypes = listOf("NSFW")
-    iconUrl = "https://www.google.com/s2/favicons?domain=pornhoarder.tv&sz=128"
+    iconUrl = "https://www.google.com/s2/favicons?domain=ww3.pornhoarder.org&sz=128"
+}
+
+dependencies {
+    // AppCompatActivity for the provider settings (Cloudflare solve dialog) host.
+    implementation("androidx.appcompat:appcompat:1.7.1")
 }
