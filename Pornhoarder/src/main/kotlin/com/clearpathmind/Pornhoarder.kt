@@ -108,14 +108,51 @@ class Pornhoarder : MainAPI() {
         return "$mainUrl/search/?search=$q&sort=$sort" + if (page > 1) "&page=$page" else ""
     }
 
-    private fun selectArticles(doc: org.jsoup.nodes.Document): List<SearchResponse> =
-        doc.select(".video article").mapNotNull { it.toSearchResult() }
+    /** Tries several card selectors: listing templates differ per page type. */
+    private val articleSelectors = listOf(
+        ".video article",
+        ".videos article",
+        ".video-list article",
+        ".video-item",
+        ".thumb-block",
+        ".video-block",
+        "article"
+    )
+
+    private fun selectArticles(doc: org.jsoup.nodes.Document): List<SearchResponse> {
+        for (sel in articleSelectors) {
+            val r = doc.select(sel).mapNotNull { it.toSearchResult() }
+            if (r.isNotEmpty()) return r
+        }
+        return emptyList()
+    }
+
+    /** Legacy ajax fallback when the GET listing parses to nothing. */
+    private fun legacyBody(query: String, latest: Boolean, page: Int): FormBody {
+        val b = FormBody.Builder()
+            .add("search", query)
+            .add("sort", if (latest) "0" else "2")
+            .add("date", "0")
+            .add("author", "0")
+            .add("page", page.toString())
+        listOf("40", "45", "12", "29", "25", "41", "46", "17", "44", "42", "43")
+            .forEach { b.add("servers[]", it) }
+        return b.build()
+    }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val base = withHost(request.data, mainUrl)
         val sep = if (base.contains("?")) "&" else "?"
         val url = if (page > 1) "$base${sep}page=$page" else base
-        val home = selectArticles(getDoc(url))
+        var home = selectArticles(getDoc(url))
+        if (home.isEmpty() && (request.name == "Latest Videos" || request.name == "Popular Videos")) {
+            // Fallback: legacy ajax endpoint (same feed, may duplicate sort order).
+            try {
+                home = selectArticles(postDoc("$mainUrl/ajax_search.php",
+                    legacyBody("", request.name == "Latest Videos", page)))
+            } catch (_: Exception) {
+            }
+        }
         return newHomePageResponse(
             HomePageList(request.name, home, isHorizontalImages = true),
             hasNext = home.isNotEmpty()
@@ -125,8 +162,20 @@ class Pornhoarder : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.select(".video-content h1").text()
             .replace("| PornHoarder.tv", "").trim()
+            .ifBlank {
+                this.selectFirst("a[title]")?.attr("title")?.trim().orEmpty()
+            }
+            .ifBlank {
+                this.selectFirst("img[alt]")?.attr("alt")?.trim().orEmpty()
+            }
             .ifBlank { return null }
-        val rawHref = this.select(".video-link").attr("href").ifBlank { return null }
+        val rawHref = (
+            this.select(".video-link").attr("href").ifBlank { null }
+                ?: this.select("a.video-link").attr("href").ifBlank { null }
+                ?: this.select(".video-image a").attr("href").ifBlank { null }
+                ?: this.select("a[href^=/video]").attr("href").ifBlank { null }
+                ?: return null
+            )
         val href = fixUrlNull(if (rawHref.startsWith("http")) rawHref else mainUrl + rawHref)
             ?: return null
         val posterUrl = fixUrlNull(
