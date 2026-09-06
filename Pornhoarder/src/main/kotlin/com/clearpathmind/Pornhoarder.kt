@@ -1,7 +1,9 @@
 package com.clearpathmind
 
+import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageList
+import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
@@ -182,32 +184,35 @@ class Pornhoarder : MainAPI() {
         doc: org.jsoup.nodes.Document,
         currentUrl: String
     ): List<SearchResponse>? {
-        var recs: List<SearchResponse> = emptyList()
-        val heading = doc.select("h1, h2, h3, h4, .title, .heading, .page-header")
-            .firstOrNull { it.text().contains("similar videos", ignoreCase = true) }
-        if (heading != null) {
-            var section: org.jsoup.nodes.Element? = heading.parent()
-            var depth = 0
-            while (section != null && depth < 4) {
-                recs = selectArticles(section)
-                if (recs.isNotEmpty()) break
-                section = section.parent()
-                depth++
+        // Pinned exact path first (verified page structure).
+        var recs: List<SearchResponse> = doc
+            .select(".video-detail-right .video-list .video article, .video-list .video article")
+            .mapNotNull { it.toSearchResult() }
+        if (recs.isEmpty()) {
+            val heading = doc.select("h1, h2, h3, h4, .title, .heading, .page-header")
+                .firstOrNull { it.text().contains("similar videos", ignoreCase = true) }
+            if (heading != null) {
+                var section: org.jsoup.nodes.Element? = heading.parent()
+                var depth = 0
+                while (section != null && depth < 4) {
+                    recs = selectArticles(section)
+                    if (recs.isNotEmpty()) break
+                    section = section.parent()
+                    depth++
+                }
             }
         }
         if (recs.isEmpty()) recs = selectArticles(doc)
         return recs.filter { it.url != currentUrl }.take(24).ifEmpty { null }
     }
 
-    /** Duration in minutes. Priority: og:video:duration (main video) →
-     * JSON-LD VideoObject → info-block time → page times. Plain integers
-     * in meta/JSON-LD are seconds (e.g. 2036 → 33). */
+    /** Duration in minutes. Priority: exact info item
+     * (.video-info .item[title*=duration]) → og:video:duration meta →
+     * JSON-LD VideoObject "duration" → info-block time → page times.
+     * Plain integers in meta/JSON-LD are seconds (e.g. 2036 → 33). */
     private fun extractDurationMinutes(doc: org.jsoup.nodes.Document): Int? {
-        doc.selectFirst("meta[property=og:video:duration], meta[itemprop=duration], meta[name=duration]")
-            ?.attr("content")?.let { raw ->
-                parseSecondsPlain(raw)?.let { m -> return m }
-                parseDurationMinutes(raw)?.let { m -> return m }
-            }
+        doc.selectFirst(".video-info .item[title*=duration], .video-details .item[title*=duration]")
+            ?.text()?.let { parseDurationMinutes(it)?.let { m -> return m } }
         doc.select("script[type=application/ld+json]").forEach { s ->
             Regex(""""duration"\s*:\s*"([^"]+)"""").findAll(s.data()).forEach { m ->
                 val raw = m.groupValues[1]
@@ -239,8 +244,9 @@ class Pornhoarder : MainAPI() {
     }
 
     private fun parseDurationMinutes(text: String): Int? {
-        Regex("""PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?""").find(text)?.let { m ->
-            if (m.value != "PT") {
+        // ISO8601 with optional P (site emits "T33M56S" without it).
+        Regex("""\bP?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?""").find(text)?.let { m ->
+            if (m.value != "PT" && m.value != "T") {
                 val h = m.groupValues[1].toIntOrNull() ?: 0
                 val mi = m.groupValues[2].toIntOrNull() ?: 0
                 val s = m.groupValues[3].toIntOrNull() ?: 0
@@ -309,10 +315,18 @@ class Pornhoarder : MainAPI() {
             )
         val href = fixUrlNull(if (rawHref.startsWith("http")) rawHref else mainUrl + rawHref)
             ?: return null
+        // Thumbnails live in data-src when lazy, or inline background-image
+        // style once loaded — cover both.
+        val styleUrl = this.select("[style*=url]").firstNotNullOfOrNull { el ->
+            Regex("""url\(['"]?(.*?)['"]?\)""")
+                .find(el.attr("style"))?.groupValues?.get(1)
+                ?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
+        }
         val posterUrl = fixUrlNull(
-            this.selectFirst(".video-image.primary.b-lazy")?.attr("data-src")
-                ?: this.selectFirst(".video-image img")?.attr("data-src")
-                ?: this.selectFirst("img")?.attr("src")
+            this.selectFirst(".video-image.primary.b-lazy")?.attr("data-src")?.ifBlank { null }
+                ?: this.selectFirst(".video-image img")?.attr("data-src")?.ifBlank { null }
+                ?: this.selectFirst("img")?.attr("src")?.ifBlank { null }
+                ?: styleUrl
         )
         return newMovieSearchResponse(title, href, TvType.NSFW) {
             this.posterUrl = posterUrl
@@ -365,6 +379,9 @@ class Pornhoarder : MainAPI() {
         val poster = fixUrlNull(document.selectFirst("[property='og:image']")?.attr("content"))
         val description = document.selectFirst("meta[property=og:description]")
             ?.attr("content")?.trim()
+            ?.ifBlank { null }
+            ?: document.selectFirst(".video-detail-description p")?.text()?.trim()
+                ?.ifBlank { null }
         val scope = document.selectFirst("main") ?: document
         val tags = (
             document.select(".video-tags a, .tags a, a[rel=tag]") +
@@ -373,12 +390,23 @@ class Pornhoarder : MainAPI() {
             .map { it.text().trim() }
             .filter { it.isNotBlank() && it.length <= 40 && !it.contains(" ") }
             .distinct()
+        // Pornstars list doubles as cast info on this template.
+        val actors = document.select("ul.video-detail-list a.video-pornstar").mapNotNull { a ->
+            val name = a.selectFirst("h4, .video-pornstar-title")?.text()?.trim()
+                .ifBlank { null } ?: return@mapNotNull null
+            val image = fixUrlNull(
+                a.selectFirst(".user-avatar-image")?.attr("data-src")?.ifBlank { null }
+                    ?: a.selectFirst("img")?.attr("src")?.ifBlank { null }
+            )
+            Actor(name, image)
+        }
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags.ifEmpty { null }
             this.duration = extractDurationMinutes(document)
             this.recommendations = similarVideos(document, url)
+            addActors(actors)
         }
     }
 

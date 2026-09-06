@@ -87,12 +87,13 @@ class CfSettingsFragment : DialogFragment() {
         }
         statusView = status
         val wv = WebView(ctx)
-        // Fixed height inside the dialog window: large enough to use,
-        // small enough to leave title/status/buttons visible.
-        val wvHeight = (ctx.resources.displayMetrics.heightPixels * 0.45).toInt()
+        // Fill leftover dialog space but never collapse: weight for flow,
+        // minimum height as a floor (fixed px heights overflowed instead).
+        wv.minimumHeight = (240 * ctx.resources.displayMetrics.density).toInt()
         wv.layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            wvHeight
+            0,
+            1f
         )
         webView = wv
 
@@ -121,6 +122,10 @@ class CfSettingsFragment : DialogFragment() {
         }
         return LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
             addView(
                 title,
                 LinearLayout.LayoutParams(
