@@ -51,6 +51,35 @@ class CfSettingsFragment : DialogFragment() {
         const val COLOR_AMBER = "#FFC107"
         const val COLOR_GRAY = "#BDBDBD"
         const val MAX_AUTO_TRIES = 5
+
+        /** In-page click helper: JS mouse events + focus tracking (SimpCityLogin pattern). */
+        private const val HELPER_JS = """(function(){
+            function simulateClick(el){if(!el)return;
+            var o={bubbles:true,cancelable:true,view:window};
+            el.dispatchEvent(new MouseEvent('mousedown',o));
+            el.dispatchEvent(new MouseEvent('mouseup',o));
+            el.dispatchEvent(new MouseEvent('click',o));}
+            window.__phClick=function(){
+            var f=document.querySelector('iframe[src*="challenges.cloudflare.com"]')
+            ||document.querySelector('iframe[src*="turnstile"]')
+            ||document.querySelector('.cf-turnstile')||document.querySelector('#cf-turnstile');
+            if(!f)return 'NO_WIDGET';
+            try{f.scrollIntoView({block:'center'});}catch(e){}
+            try{f.focus();}catch(e){}
+            var r=f.getBoundingClientRect();
+            if(r.width===0&&r.height===0)return 'HIDDEN';
+            simulateClick(f);return 'CLICKED';};
+            document.addEventListener('focusin',function(e){
+            if(e.target&&e.target.tagName==='IFRAME')simulateClick(e.target);},true);
+            })();"""
+
+        private const val CLICK_WIDGET_JS =
+            "(function(){try{return window.__phClick?window.__phClick():'NO_HELPER';}catch(e){return 'ERROR';}})();"
+
+        private const val CHECK_CHALLENGE_JS =
+            "(function(){var h=document.documentElement.innerHTML.toLowerCase();" +
+                "return h.includes(\"turnstile\")||h.includes(\"verify you are human\")" +
+                "||h.includes(\"checking your browser\")||h.includes(\"just a moment\");})();"
     }
 
     override fun onCreateView(
@@ -352,36 +381,5 @@ class CfSettingsFragment : DialogFragment() {
             MainActivity.reloadHomeEvent.invoke(true)
         } catch (_: Exception) {
         }
-    }
-
-    companion object {
-        /** In-page click helper: JS mouse events + focus tracking (SimpCityLogin pattern). */
-        private const val HELPER_JS = """(function(){
-            function simulateClick(el){if(!el)return;
-            var o={bubbles:true,cancelable:true,view:window};
-            el.dispatchEvent(new MouseEvent('mousedown',o));
-            el.dispatchEvent(new MouseEvent('mouseup',o));
-            el.dispatchEvent(new MouseEvent('click',o));}
-            window.__phClick=function(){
-            var f=document.querySelector('iframe[src*="challenges.cloudflare.com"]')
-            ||document.querySelector('iframe[src*="turnstile"]')
-            ||document.querySelector('.cf-turnstile')||document.querySelector('#cf-turnstile');
-            if(!f)return 'NO_WIDGET';
-            try{f.scrollIntoView({block:'center'});}catch(e){}
-            try{f.focus();}catch(e){}
-            var r=f.getBoundingClientRect();
-            if(r.width===0&&r.height===0)return 'HIDDEN';
-            simulateClick(f);return 'CLICKED';};
-            document.addEventListener('focusin',function(e){
-            if(e.target&&e.target.tagName==='IFRAME')simulateClick(e.target);},true);
-            })();"""
-
-        private const val CLICK_WIDGET_JS =
-            "(function(){try{return window.__phClick?window.__phClick():'NO_HELPER';}catch(e){return 'ERROR';}})();"
-
-        private const val CHECK_CHALLENGE_JS =
-            "(function(){var h=document.documentElement.innerHTML.toLowerCase();" +
-                "return h.includes(\"turnstile\")||h.includes(\"verify you are human\")" +
-                "||h.includes(\"checking your browser\")||h.includes(\"just a moment\");})();"
     }
 }
