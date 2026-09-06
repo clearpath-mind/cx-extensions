@@ -1,4 +1,4 @@
-version = 16
+version = 17
 
 cloudstream {
     authors = listOf("clearpath-mind")
@@ -15,6 +15,7 @@ cloudstream {
     status = 1 // will be 3 if unspecified
     tvTypes = listOf("NSFW")
     iconUrl = "https://www.google.com/s2/favicons?domain=ww8.pornhoarder.org&sz=128"
+    requiresResources = true
 }
 
 dependencies {

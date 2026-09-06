@@ -1,8 +1,8 @@
 package com.clearpathmind
 
 import android.content.Context
+import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
-import com.lagradost.cloudstream3.MainActivity
 import com.lagradost.cloudstream3.extractors.StreamTape
 import com.lagradost.cloudstream3.extractors.Wishonly
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
@@ -17,8 +17,12 @@ class PornhoarderProvider : Plugin() {
         registerExtractorAPI(Wishonly())
 
         this.openSettings = { ctx ->
-            CfSettingsDialog(ctx as AppCompatActivity).show()
-            MainActivity.reloadHomeEvent.invoke(true)
+            val act = ctx as AppCompatActivity
+            if (!act.isFinishing && !act.isDestroyed) {
+                CfSettingsFragment(this).show(act.supportFragmentManager, "ph_cf")
+            } else {
+                Log.e("PornHoarder", "Activity is not valid anymore, cannot show settings")
+            }
         }
     }
 }
