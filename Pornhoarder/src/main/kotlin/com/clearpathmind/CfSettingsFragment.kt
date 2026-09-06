@@ -13,6 +13,7 @@ import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebView
@@ -88,13 +89,26 @@ class CfSettingsFragment : DialogFragment() {
         statusView = status
         val wv = WebView(ctx)
         // Fill leftover dialog space but never collapse: weight for flow,
-        // minimum height as a floor (fixed px heights overflowed instead).
+        // minimum height as a floor. Rounded outline + margins keep the page
+        // visibly inside the dialog's rounded border instead of bleeding over it.
         wv.minimumHeight = (240 * ctx.resources.displayMetrics.density).toInt()
         wv.layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             0,
             1f
-        )
+        ).apply {
+            setMargins(12, 0, 12, 0)
+        }
+        try {
+            wv.outlineProvider = ViewOutlineProvider.BACKGROUND
+            wv.clipToOutline = true
+            wv.background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(Color.BLACK)
+                cornerRadius = 16f
+            }
+        } catch (_: Exception) {
+        }
         webView = wv
 
         val reload = actionButton("RELOAD", COLOR_CARD) {

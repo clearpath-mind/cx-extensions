@@ -154,12 +154,6 @@ class Pornhoarder : MainAPI() {
         }
     }
 
-    /** Verified site pattern: GET /search/?search=<q>&sort=<0|2>[&page=N]. */
-    private fun listingUrl(query: String, sort: String, page: Int): String {
-        val q = java.net.URLEncoder.encode(query, "UTF-8")
-        return "$mainUrl/search/?search=$q&sort=$sort" + if (page > 1) "&page=$page" else ""
-    }
-
     /** Tries several card selectors: listing templates differ per page type. */
     private val articleSelectors = listOf(
         ".video article",
@@ -262,33 +256,51 @@ class Pornhoarder : MainAPI() {
         return null
     }
 
-    /** Legacy ajax fallback when the GET listing parses to nothing. */
-    private fun legacyBody(query: String, latest: Boolean, page: Int): FormBody {
+    /** Exact live filter set (verified search-page source: 13 checked servers,
+     * sort 0=Date/1=Relevance/2=Popularity, date 0=Any time, author 0=Any).
+     * The site's native mechanism is POST /ajax_search.php with this body. */
+    private val serverIds = listOf(
+        "47", "21", "40", "45", "12", "35", "25", "41", "44", "42", "43", "48", "29"
+    )
+
+    private fun searchPostBody(query: String, sort: String, page: Int): FormBody {
         val b = FormBody.Builder()
             .add("search", query)
-            .add("sort", if (latest) "0" else "2")
+            .add("sort", sort)
             .add("date", "0")
             .add("author", "0")
             .add("page", page.toString())
-        listOf("40", "45", "12", "29", "25", "41", "46", "17", "44", "42", "43")
-            .forEach { b.add("servers[]", it) }
+        serverIds.forEach { b.add("servers[]", it) }
         return b.build()
+    }
+
+    /** Native POST search; never throws (empty on any failure). */
+    private suspend fun postSearch(query: String, sort: String, page: Int): List<SearchResponse> {
+        return try {
+            selectArticles(
+                postDoc(withHost("$mainUrl/ajax_search.php", mainUrl), searchPostBody(query, sort, page))
+            )
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun pageUrl(base: String, page: Int): String {
+        val b = withHost(base, mainUrl)
+        val sep = if (b.contains("?")) "&" else "?"
+        return if (page > 1) "$b${sep}page=$page" else b
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         ensureBaseCookies()
         ensureStraightOrientation()
-        val base = withHost(request.data, mainUrl)
-        val sep = if (base.contains("?")) "&" else "?"
-        val url = if (page > 1) "$base${sep}page=$page" else base
-        var home = selectArticles(getDoc(url))
-        if (home.isEmpty() && (request.name == "Latest Videos" || request.name == "Popular Videos")) {
-            // Fallback: legacy ajax endpoint (same feed, may duplicate sort order).
-            try {
-                home = selectArticles(postDoc("$mainUrl/ajax_search.php",
-                    legacyBody("", request.name == "Latest Videos", page)))
-            } catch (_: Exception) {
-            }
+        val home: List<SearchResponse> = when (request.name) {
+            // POST-first: full filter set returns the complete feed.
+            "Latest Videos" ->
+                postSearch("", "0", page).ifEmpty { selectArticles(getDoc(pageUrl(request.data, page))) }
+            "Popular Videos" ->
+                postSearch("", "2", page).ifEmpty { selectArticles(getDoc(pageUrl(request.data, page))) }
+            else -> selectArticles(getDoc(pageUrl(request.data, page)))
         }
         return newHomePageResponse(
             HomePageList(request.name, home, isHorizontalImages = true),
@@ -338,7 +350,21 @@ class Pornhoarder : MainAPI() {
         if (q.isBlank()) return newSearchResponseList(emptyList(), false)
         ensureBaseCookies()
         ensureStraightOrientation()
-        val enc = java.net.URLEncoder.encode(q, "UTF-8")
+        // Reference feed: reject result sets identical to unfiltered Latest.
+        val latestUrls = try {
+            postSearch("", "0", 1).map { it.url }.toSet()
+        } catch (_: Exception) {
+            emptySet()
+        }
+        // Primary: native POST with the full filter set.
+        val posted = postSearch(q, "0", page)
+        if (posted.isNotEmpty() &&
+            (latestUrls.isEmpty() || posted.map { it.url }.toSet() != latestUrls)
+        ) {
+            return newSearchResponseList(posted, true)
+        }
+        // Fallbacks: GET variants.
+        val enc = java.net.URLEncoder.encode(q, "UTF-8").replace("+", "%20")
         val pageSuffix = if (page > 1) "&page=$page" else ""
         val candidates = listOf(
             "$mainUrl/search/?search=$enc&sort=0$pageSuffix",
@@ -346,12 +372,6 @@ class Pornhoarder : MainAPI() {
             "$mainUrl/search/?search=$enc&sort=2$pageSuffix",
             "$mainUrl/search/$enc/"
         )
-        // Reference feed: reject candidate sets identical to unfiltered Latest.
-        val latestUrls = try {
-            selectArticles(getDoc(listingUrl("", "0", 1))).map { it.url }.toSet()
-        } catch (_: Exception) {
-            emptySet()
-        }
         for (u in candidates) {
             try {
                 val r = selectArticles(getDoc(u))
@@ -362,12 +382,7 @@ class Pornhoarder : MainAPI() {
             } catch (_: Exception) {
             }
         }
-        // Last resort: legacy ajax (may be unfiltered, but non-empty).
-        try {
-            val r = selectArticles(postDoc("$mainUrl/ajax_search.php", legacyBody(q, true, page)))
-            if (r.isNotEmpty()) return newSearchResponseList(r, true)
-        } catch (_: Exception) {
-        }
+        if (posted.isNotEmpty()) return newSearchResponseList(posted, true)
         return newSearchResponseList(emptyList(), false)
     }
 
@@ -447,6 +462,7 @@ class Pornhoarder : MainAPI() {
             "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         val MIRROR_HOSTS = listOf(
             "https://ww8.pornhoarder.org",
+            "https://ww5.pornhoarder.org",
             "https://ww3.pornhoarder.org",
             "https://pornhoarder.tv"
         )
