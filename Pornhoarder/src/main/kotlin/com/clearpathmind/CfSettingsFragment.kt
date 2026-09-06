@@ -289,8 +289,7 @@ class CfSettingsFragment : DialogFragment() {
         }
     }
 
-    /** Passive challenge monitor: reports solved/challenged/clean.
-     * No automatic clicking — the user taps the checkbox manually. */
+    /** Passive challenge monitor: auto Save & Close shortly after clearance. */
     private fun startDetection(webView: WebView) {
         stopDetection()
         val task = object : Runnable {
@@ -298,9 +297,14 @@ class CfSettingsFragment : DialogFragment() {
                 try {
                     val cookies = CookieManager.getInstance().getCookie(SITE_URL).orEmpty()
                     if (cookies.contains("cf_clearance")) {
-                        setStatus("Solved ✓ — set orientation above, then Save & Close.", COLOR_GREEN)
-                        poll = this
-                        uiHandler.postDelayed(this, 5000)
+                        setStatus("Solved ✓ — saving & closing…", COLOR_GREEN)
+                        try {
+                            CloudflareSolver.saveCookies(SITE_URL, Pornhoarder.USER_AGENT)
+                            CookieManager.getInstance().flush()
+                        } catch (_: Exception) {
+                        }
+                        stopDetection()
+                        uiHandler.postDelayed({ dismissAllowingStateLoss() }, 1200)
                         return
                     }
                     webView.evaluateJavascript(CHECK_CHALLENGE_JS) { res ->
