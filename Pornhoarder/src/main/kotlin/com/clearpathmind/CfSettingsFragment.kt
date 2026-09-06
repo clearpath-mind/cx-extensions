@@ -40,33 +40,12 @@ class CfSettingsFragment(
         const val COLOR_GRAY = "#BDBDBD"
     }
 
-    private fun getDrawable(name: String): Drawable {
-        val id = res.getIdentifier(name, "drawable", BuildConfig.LIBRARY_PACKAGE_NAME)
-        return res.getDrawable(id, null) ?: throw Exception("Drawable $name not found")
-    }
-
-    private fun <T : View> View.findView(name: String): T {
-        val id = res.getIdentifier(name, "id", BuildConfig.LIBRARY_PACKAGE_NAME)
-        if (id == 0) throw Exception("View ID $name not found.")
-        return this.findViewById(id)
-    }
-
-    private fun getLayout(name: String, inflater: LayoutInflater, container: ViewGroup?): View {
-        val id = res.getIdentifier(name, "layout", BuildConfig.LIBRARY_PACKAGE_NAME)
-        return inflater.inflate(res.getLayout(id), container, false)
-    }
-
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
         savedInstanceState: Bundle?
     ): View {
-        val view = getLayout("fragment_ph_cf", inflater, container)
-        val bgId = res.getIdentifier("dialog_background", "drawable", BuildConfig.LIBRARY_PACKAGE_NAME)
-        if (bgId != 0) {
-            view.background = res.getDrawable(bgId, null)
-        }
-        return view
+        return inflater.inflate(R.layout.fragment_ph_cf, container, false)
     }
 
     override fun onStart() {
@@ -80,15 +59,15 @@ class CfSettingsFragment(
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        val status: TextView = view.findView("phStatus")
-        val headerIcon: ImageView = view.findView("phHeaderIcon")
-        val wv: WebView = view.findView("phWebView")
-        val reload: Button = view.findView("phReload")
-        val save: Button = view.findView("phSave")
+        val status: TextView = view.findViewById(R.id.phStatus)
+        val headerIcon: ImageView = view.findViewById(R.id.phHeaderIcon)
+        val wv: WebView = view.findViewById(R.id.phWebView)
+        val reload: Button = view.findViewById(R.id.phReload)
+        val save: Button = view.findViewById(R.id.phSave)
         webView = wv
 
         try {
-            headerIcon.setImageDrawable(getDrawable("settings_icon"))
+            headerIcon.setImageDrawable(res.getDrawable(R.drawable.settings_icon, null))
         } catch (_: Exception) {
         }
 
