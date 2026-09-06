@@ -17,11 +17,15 @@ class PornhoarderProvider : Plugin() {
         registerExtractorAPI(Wishonly())
 
         this.openSettings = { ctx ->
-            val act = ctx as AppCompatActivity
-            if (!act.isFinishing && !act.isDestroyed) {
-                CfSettingsFragment(this).show(act.supportFragmentManager, "ph_cf")
-            } else {
-                Log.e("PornHoarder", "Activity is not valid anymore, cannot show settings")
+            try {
+                val act = ctx as AppCompatActivity
+                if (!act.isFinishing && !act.isDestroyed) {
+                    CfSettingsFragment().show(act.supportFragmentManager, "ph_cf")
+                } else {
+                    Log.e("PornHoarder", "Activity is not valid anymore, cannot show settings")
+                }
+            } catch (e: Exception) {
+                Log.e("PornHoarder", "Failed to open settings: ${e.message}")
             }
         }
     }
