@@ -200,7 +200,7 @@ class Pornhoarder : MainAPI() {
     }
 
     /** Duration in minutes. Priority: og:video:duration (main video) →
-     * JSON-LD VideoObject → info-block time → generic search. Plain integers
+     * JSON-LD VideoObject → info-block time → page times. Plain integers
      * in meta/JSON-LD are seconds (e.g. 2036 → 33). */
     private fun extractDurationMinutes(doc: org.jsoup.nodes.Document): Int? {
         doc.selectFirst("meta[property=og:video:duration], meta[itemprop=duration], meta[name=duration]")
@@ -221,6 +221,13 @@ class Pornhoarder : MainAPI() {
                 parseDurationMinutes(el.text())?.let { m -> return m }
             }
         }
+        // Last resorts: any duration-like string in JSON-LD, then the first
+        // timestamp in the main content area (nav excluded structurally).
+        doc.select("script[type=application/ld+json]").forEach { s ->
+            parseDurationMinutes(s.data())?.let { m -> return m }
+        }
+        val main = doc.selectFirst("main") ?: doc
+        parseDurationMinutes(main.text())?.let { m -> return m }
         return null
     }
 
