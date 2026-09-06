@@ -8,9 +8,11 @@ import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -50,31 +52,32 @@ class CfSettingsFragment : DialogFragment() {
         const val COLOR_GREEN = "#4CAF50"
         const val COLOR_AMBER = "#FFC107"
         const val COLOR_GRAY = "#BDBDBD"
-        const val MAX_AUTO_TRIES = 5
+        const val MAX_AUTO_TRIES = 3
 
-        /** In-page click helper: JS mouse events + focus tracking (SimpCityLogin pattern). */
+        /** Baked preference cookies (user-approved Straight config). */
+        private const val BAKED_COOKIES = "pornhoarder_settings=0---0---1---1; pornhoarder_a=1"
+
+        /** Reports widget state: ABSENT, HIDDEN (zero-size), or "x,y" center. */
+        private const val STATE_JS = """(function(){
+            var f=document.querySelector('iframe[src*="challenges.cloudflare.com"]')
+            ||document.querySelector('iframe[src*="turnstile"]')
+            ||document.querySelector('.cf-turnstile')||document.querySelector('#cf-turnstile');
+            if(!f)return 'ABSENT';
+            try{f.scrollIntoView({block:'center'});}catch(e){}
+            var r=f.getBoundingClientRect();
+            if(r.width===0&&r.height===0)return 'HIDDEN';
+            return (r.left+r.width/2)+','+(r.top+r.height/2);})();"""
+
+        /** Focus tracking so keyboard/manual interaction also clicks (SimpCityLogin pattern). */
         private const val HELPER_JS = """(function(){
             function simulateClick(el){if(!el)return;
             var o={bubbles:true,cancelable:true,view:window};
             el.dispatchEvent(new MouseEvent('mousedown',o));
             el.dispatchEvent(new MouseEvent('mouseup',o));
             el.dispatchEvent(new MouseEvent('click',o));}
-            window.__phClick=function(){
-            var f=document.querySelector('iframe[src*="challenges.cloudflare.com"]')
-            ||document.querySelector('iframe[src*="turnstile"]')
-            ||document.querySelector('.cf-turnstile')||document.querySelector('#cf-turnstile');
-            if(!f)return 'NO_WIDGET';
-            try{f.scrollIntoView({block:'center'});}catch(e){}
-            try{f.focus();}catch(e){}
-            var r=f.getBoundingClientRect();
-            if(r.width===0&&r.height===0)return 'HIDDEN';
-            simulateClick(f);return 'CLICKED';};
             document.addEventListener('focusin',function(e){
             if(e.target&&e.target.tagName==='IFRAME')simulateClick(e.target);},true);
             })();"""
-
-        private const val CLICK_WIDGET_JS =
-            "(function(){try{return window.__phClick?window.__phClick():'NO_HELPER';}catch(e){return 'ERROR';}})();"
 
         private const val CHECK_CHALLENGE_JS =
             "(function(){var h=document.documentElement.innerHTML.toLowerCase();" +
@@ -113,10 +116,11 @@ class CfSettingsFragment : DialogFragment() {
         }
         statusView = status
         val wv = WebView(ctx)
+        // Explicit height: weight-based sizing collapses inside dialog windows.
+        val wvHeight = ((ctx.resources.displayMetrics.heightPixels * 0.55).toInt())
         wv.layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            0,
-            1f
+            wvHeight
         )
         webView = wv
 
@@ -251,6 +255,15 @@ class CfSettingsFragment : DialogFragment() {
             CookieManager.getInstance().apply {
                 setAcceptCookie(true)
                 setAcceptThirdPartyCookies(wv, true)
+                // Baked Straight-config cookies for every known mirror host.
+                for (host in Pornhoarder.MIRROR_HOSTS) {
+                    for (pair in BAKED_COOKIES.split(";")) {
+                        try {
+                            setCookie(host, "${pair.trim()}; path=/")
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
             }
         } catch (_: Exception) {
         }
@@ -309,9 +322,57 @@ class CfSettingsFragment : DialogFragment() {
 
     /** Focuses + JS-clicks the Turnstile widget; silent, up to MAX_AUTO_TRIES. */
     private fun autoClickAttempt(webView: WebView) {
-        autoTries++
-        setStatus("Auto-click try $autoTries/$MAX_AUTO_TRIES…", COLOR_GRAY)
-        webView.evaluateJavascript(CLICK_WIDGET_JS, null)
+        webView.evaluateJavascript(STATE_JS) { res ->
+            val state = res?.removeSurrounding("\"").orEmpty()
+            when {
+                state == "ABSENT" -> setStatus(
+                    "Widget not on page — tap manually if you see a checkbox.",
+                    COLOR_AMBER
+                )
+                state == "HIDDEN" -> setStatus(
+                    "Widget hidden — waiting for it to render…",
+                    COLOR_GRAY
+                )
+                state.contains(",") -> {
+                    val cx = state.substringBefore(",").toFloatOrNull()
+                    val cy = state.substringAfter(",", "").toFloatOrNull()
+                    if (cx == null || cy == null) {
+                        setStatus("Widget unreadable ($state) — tap manually.", COLOR_AMBER)
+                        return@evaluateJavascript
+                    }
+                    autoTries++
+                    setStatus("Auto-tap try $autoTries/$MAX_AUTO_TRIES…", COLOR_GRAY)
+                    dispatchTap(webView, cx, cy)
+                }
+                else -> setStatus("Widget state ($state) — tap manually.", COLOR_AMBER)
+            }
+        }
+    }
+
+    /** Real input tap at CSS-pixel coordinates (trusted by Turnstile). */
+    private fun dispatchTap(webView: WebView, cssX: Float, cssY: Float) {
+        try {
+            val density = (activity?.resources?.displayMetrics?.density) ?: 1f
+            val realX = cssX * density
+            val realY = cssY * density
+            val downTime = SystemClock.uptimeMillis()
+            val down = MotionEvent.obtain(
+                downTime, downTime, MotionEvent.ACTION_DOWN, realX, realY, 0
+            )
+            webView.dispatchTouchEvent(down)
+            webView.postDelayed({
+                try {
+                    val up = MotionEvent.obtain(
+                        downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, realX, realY, 0
+                    )
+                    webView.dispatchTouchEvent(up)
+                    down.recycle()
+                    up.recycle()
+                } catch (_: Exception) {
+                }
+            }, 150)
+        } catch (_: Exception) {
+        }
     }
 
     /** Polls page state; auto-clicks while challenged, stops at clearance. */

@@ -42,11 +42,7 @@ class Pornhoarder : MainAPI() {
      * Mirror rotation: subdomains rotate (ww3 → ww8 …) and the bare domain is
      * Cloudflare edge-broken (Error 1034). Every request cycles the hosts.
      */
-    private val mirrorHosts = listOf(
-        "https://ww8.pornhoarder.org",
-        "https://ww3.pornhoarder.org",
-        "https://pornhoarder.tv"
-    )
+    private val mirrorHosts get() = MIRROR_HOSTS
 
     private fun withHost(url: String, host: String): String {
         mirrorHosts.forEach { h ->
@@ -141,6 +137,21 @@ class Pornhoarder : MainAPI() {
         }
     }
 
+    private var baseCookiesEnsured = false
+
+    /** Merges the user-approved baked cookies (Straight config) into the
+     * persisted store so every request carries them from the first call. */
+    private fun ensureBaseCookies() {
+        if (baseCookiesEnsured) return
+        baseCookiesEnsured = true
+        try {
+            CloudflareSolver.mergeCookies(
+                BAKED_COOKIES.map { (k, v) -> "$k=$v; path=/" }
+            )
+        } catch (_: Exception) {
+        }
+    }
+
     /** Verified site pattern: GET /search/?search=<q>&sort=<0|2>[&page=N]. */
     private fun listingUrl(query: String, sort: String, page: Int): String {
         val q = java.net.URLEncoder.encode(query, "UTF-8")
@@ -188,20 +199,36 @@ class Pornhoarder : MainAPI() {
         return recs.filter { it.url != currentUrl }.take(24).ifEmpty { null }
     }
 
-    /** Duration in minutes from meta / info-block time strings / JSON-LD. */
+    /** Duration in minutes. Priority: og:video:duration (main video) →
+     * JSON-LD VideoObject → info-block time → generic search. Plain integers
+     * in meta/JSON-LD are seconds (e.g. 2036 → 33). */
     private fun extractDurationMinutes(doc: org.jsoup.nodes.Document): Int? {
         doc.selectFirst("meta[property=og:video:duration], meta[itemprop=duration], meta[name=duration]")
-            ?.attr("content")?.let { parseDurationMinutes(it)?.let { m -> return m } }
+            ?.attr("content")?.let { raw ->
+                parseSecondsPlain(raw)?.let { m -> return m }
+                parseDurationMinutes(raw)?.let { m -> return m }
+            }
+        doc.select("script[type=application/ld+json]").forEach { s ->
+            Regex(""""duration"\s*:\s*"([^"]+)"""").findAll(s.data()).forEach { m ->
+                val raw = m.groupValues[1]
+                parseSecondsPlain(raw)?.let { v -> return v }
+                parseDurationMinutes(raw)?.let { v -> return v }
+            }
+        }
         val scope = doc.selectFirst(".video-info, .video-details, .video-meta") ?: doc
         for (sel in listOf(".duration", ".video-duration", "[class*=duration]", ".video-time", ".time")) {
             scope.select(sel).forEach { el ->
                 parseDurationMinutes(el.text())?.let { m -> return m }
             }
         }
-        doc.select("script[type=application/ld+json]").forEach { s ->
-            parseDurationMinutes(s.data())?.let { m -> return m }
-        }
         return null
+    }
+
+    /** Plain second counts (10s … 12h); only for meta/JSON-LD values. */
+    private fun parseSecondsPlain(text: String): Int? {
+        val secs = text.trim().toLongOrNull() ?: return null
+        if (secs < 10 || secs > 43200) return null
+        return (secs / 60).toInt().coerceAtLeast(1)
     }
 
     private fun parseDurationMinutes(text: String): Int? {
@@ -236,6 +263,8 @@ class Pornhoarder : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        ensureBaseCookies()
+        ensureStraightOrientation()
         val base = withHost(request.data, mainUrl)
         val sep = if (base.contains("?")) "&" else "?"
         val url = if (page > 1) "$base${sep}page=$page" else base
@@ -286,6 +315,7 @@ class Pornhoarder : MainAPI() {
     override suspend fun search(query: String, page: Int): SearchResponseList? {
         val q = query.trim()
         if (q.isBlank()) return newSearchResponseList(emptyList(), false)
+        ensureBaseCookies()
         ensureStraightOrientation()
         val enc = java.net.URLEncoder.encode(q, "UTF-8")
         val pageSuffix = if (page > 1) "&page=$page" else ""
@@ -380,6 +410,16 @@ class Pornhoarder : MainAPI() {
     companion object {
         const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+        val MIRROR_HOSTS = listOf(
+            "https://ww8.pornhoarder.org",
+            "https://ww3.pornhoarder.org",
+            "https://pornhoarder.tv"
+        )
+        /** User-approved Straight config baked into every session. */
+        val BAKED_COOKIES = mapOf(
+            "pornhoarder_settings" to "0---0---1---1",
+            "pornhoarder_a" to "1"
+        )
         private val BLOCKED_MARKERS = listOf(
             "checking your browser",
             "just a moment",
