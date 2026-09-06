@@ -392,11 +392,11 @@ class Pornhoarder : MainAPI() {
             .distinct()
         // Pornstars list doubles as cast info on this template.
         val actors = document.select("ul.video-detail-list a.video-pornstar").mapNotNull { a ->
-            val name = a.selectFirst("h4, .video-pornstar-title")?.text()?.trim()
-                .ifBlank { null } ?: return@mapNotNull null
+            val name = a.selectFirst("h4, .video-pornstar-title")?.text()?.trim()?.takeIf { it.isNotBlank() }
+                ?: return@mapNotNull null
             val image = fixUrlNull(
-                a.selectFirst(".user-avatar-image")?.attr("data-src")?.ifBlank { null }
-                    ?: a.selectFirst("img")?.attr("src")?.ifBlank { null }
+                a.selectFirst(".user-avatar-image")?.attr("data-src")?.takeIf { it.isNotBlank() }
+                    ?: a.selectFirst("img")?.attr("src")?.takeIf { it.isNotBlank() }
             )
             Actor(name, image)
         }
